@@ -113,6 +113,11 @@ if __name__ == '__main__':
     except (FileNotFoundError, ValueError) as e:
         eval_loader = None
         print(f'No validation set: {e}')
+    if getattr(args, 'skip_val', False):
+        # Validation decodes whole val volumes (384x384x48 -> 384^3 at 32 ch, fp32) and
+        # OOMs on 24 GB GPUs; it is monitoring only (val_lpips/KID/GIF), never a loss.
+        eval_loader = None
+        print('--skip_val: validation disabled')
 
     # preload
     if args.preload:

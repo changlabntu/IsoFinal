@@ -31,6 +31,7 @@ _MODEL_FILE_MAP = {
     'MSclean': 'models/MSclean.py',
     'vqcleanM0aMSskipE': 'models/MSclean.py',
     'vqclean': 'models/vqclean.py',
+    'MScleanQD': 'models/MScleanQD.py',
 }
 
 

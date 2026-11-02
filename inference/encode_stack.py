@@ -4,14 +4,14 @@ TIFF-folder source (one z-chunk per run):
 
     python inference/encode_stack.py --model skipU --exp sample0 \
         --source /media/cheese/Ghc_data3/THX10/sample0_crop \
-        [--range 0 32] [--half --batch 8] [--tsne]
+        [--range 0 32] [--half --batch 8]
 
 OME-Zarr source (all z-chunks in ONE run — the default format for large
 stacks; needs the py38zarr env = py38pl16 clone + tensorstore):
 
     python inference/encode_stack.py --model skipU --exp sample0 \
         --zarr /media/cheese/Ghc_data3/THX10/sample0_crop_ome.zarr \
-        [--level 0] [--range 0 160] [--zchunk 32] [--half --batch 8] [--tsne]
+        [--level 0] [--range 0 160] [--zchunk 32] [--half --batch 8]
 
 The TIFF source folder holds large 2D tif slices (sorted filename order = Z
 order), all the same (H, W) with H and W divisible by --patch (see the
@@ -44,10 +44,7 @@ is:
 
 Codec only by default — decode later from the npz files
 (inference/decode_stack.py: grid decode to uint16 TIFFs / a native zarr
-store; inference/inference_latent.py is the per-file TIFF round trip);
---tsne additionally
-runs inference/latent_tsne.py over each chunk's codec dir (plots + anomaly
-csv land in that dir). A norm_params.json in the chunk dir records the
+store). A norm_params.json in the chunk dir records the
 intensity window and all parameters needed to reproduce or invert the
 encode. Chunks of one sample should share ONE window: zarr mode does this
 automatically; for TIFF mode the first chunk estimates it and later chunks
@@ -72,7 +69,7 @@ import torch  # noqa: E402
 from inference import Engine, available, get as registry_get  # noqa: E402
 from inference.zarr_io import open_zarr  # noqa: E402
 
-DEFAULT_OUT_BASE = '/home/cheese/workspace/Output'
+DEFAULT_OUT_BASE = '/media/cheese/Ghc_data3/THX10'
 
 
 def zarr_window(arr, z0, z1, lo_pct, hi_pct):
@@ -131,15 +128,12 @@ def encode_grid(eng, args, codec_dir, meta_str, rows, cols, fetch):
     return n_scales, time.perf_counter() - t0
 
 
-def finish_chunk(codec_dir, n_scales, secs, n_cells, raw_bytes, tsne):
+def finish_chunk(codec_dir, n_scales, secs, n_cells, raw_bytes):
     total = sum(os.path.getsize(os.path.join(codec_dir, f))
                 for f in os.listdir(codec_dir) if f.endswith('.npz'))
     print(f'done: {n_cells} codecs ({n_scales} scales) in {secs:.0f}s '
           f'-> {codec_dir}\ncodec total {total / 2**20:.1f} MiB vs raw '
           f'{raw_bytes / 2**30:.1f} GiB ({raw_bytes / total:.0f}x)')
-    if tsne:
-        from inference.latent_tsne import run as tsne_run
-        tsne_run(codec_dir, out_dir=codec_dir)
 
 
 def main():
@@ -172,8 +166,6 @@ def main():
     parser.add_argument('--window', type=float, nargs=2, default=None, metavar=('LO', 'HI'),
                         help='Reuse a fixed intensity window instead of estimating one — '
                              'e.g. to match codecs encoded earlier from another source')
-    parser.add_argument('--tsne', action='store_true',
-                        help="Also run latent_tsne over each chunk's codec dir afterwards")
     parser.add_argument('--batch', type=int, default=8,
                         help='Patches per encode forward (default 8)')
     parser.add_argument('--epoch', type=int, default=None, help="Override the registry's epoch")
@@ -258,7 +250,7 @@ def main():
 
             n_scales, secs = encode_grid(eng, args, codec_dir, meta_str, rows, cols, fetch)
             raw = (zb - za) * H * W * arr.dtype.numpy_dtype.itemsize
-            finish_chunk(codec_dir, n_scales, secs, rows * cols, raw, args.tsne)
+            finish_chunk(codec_dir, n_scales, secs, rows * cols, raw)
         return
 
     files = sorted(glob(os.path.join(args.source, '*.tif'))
@@ -314,12 +306,7 @@ def main():
         return torch.cat(vols)
 
     n_scales, secs = encode_grid(eng, args, codec_dir, meta_str, rows, cols, fetch)
-    if args.tsne:
-        raw = stack.nbytes
-        del stack                                   # free the RAM before sklearn
-        finish_chunk(codec_dir, n_scales, secs, rows * cols, raw, True)
-    else:
-        finish_chunk(codec_dir, n_scales, secs, rows * cols, stack.nbytes, False)
+    finish_chunk(codec_dir, n_scales, secs, rows * cols, stack.nbytes)
 
 
 if __name__ == '__main__':

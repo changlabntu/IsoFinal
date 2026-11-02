@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from contextlib import contextmanager
 
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
-from ldm.modules.losses.vqperceptual import VQLPIPSWithDiscriminator
 from ldm.modules.diffusionmodules.modelcut import Encoder, Decoder
 from ldm.util import instantiate_from_config
 import yaml

@@ -71,4 +71,7 @@ def get_args():
                         help='MLflow tracking: an http://URL for a server, or a bare NAME for a '
                              'local store at $LOGS/NAME.db + $LOGS/NAME/ (default name: mlflow). '
                              'Overrides env config.')
+    parser.add_argument('--skip_val', action='store_true',
+                        help='Disable validation (metrics/GIF only, no effect on training). '
+                             'Needed on <=24 GB GPUs: validation decodes full val volumes.')
     return parser

@@ -41,9 +41,16 @@ Cell selection (--cells R0 R1 C0 C1, half-open / --row R / --col C) and
 --chunk apply to both sinks; the default is every cell of every chunk dir.
 --codec may also point at a single z chunk dir. Model, epoch and intensity
 window come from each chunk's norm_params.json; --model/--epoch override.
-Decoding is DETERMINISTIC by default (running-stat BN, dropout off); --mc
-instead runs the generator components in .train() — batch-stat BN + live
-dropout, one MC draw per patch (the training-time test convention).
+Decoding runs the generator components in .train() by default — batch-stat
+BN + live dropout, one MC draw per patch (the training-time test convention);
+--deterministic uses running-stat BN with dropout off instead.
+
+Seams: by default each cell is decoded with a LATENT HALO (--halo 4 --zhalo 4,
+see inference/halo.py): its latents are stitched from the neighbouring cells'
+stored codes, decoded at 448^3 and cropped back to the 384^3 cell, so tile
+faces continue into the neighbour. --halo 0 --zhalo 0 is the legacy
+cell-by-cell decode. The halo applies to --what decode only. A 448^3 fp16
+decode needs about 14 GB: use --half --batch 1 on a 24 GB card.
 """
 
 import argparse
@@ -52,6 +59,9 @@ import os
 import re
 import sys
 import time
+
+# halo decodes allocate ~6 GB tensors; avoid allocator fragmentation
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -63,9 +73,14 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from inference import Engine, available  # noqa: E402
-from inference.inference_latent import to_zx_pages  # noqa: E402
+from inference import halo  # noqa: E402
 
 CHUNK_RE = re.compile(r'^z(\d{4,})-(\d{4,})$')
+
+
+def to_zx_pages(vol_yxz):
+    """(Y, X, Z) array -> ZX tif pages (Y, Z, X): page y=k, rows Z, cols X."""
+    return np.ascontiguousarray(np.transpose(vol_yxz, (0, 2, 1)))
 
 
 def to_xy_pages(vol_yxz):
@@ -180,9 +195,14 @@ def main():
                         help='Override the epoch (default: norm_params.json / registry)')
     parser.add_argument('--device', default=None, help='cuda / cpu (default: cuda if available)')
     parser.add_argument('--half', action='store_true', help='Run the model in fp16')
-    parser.add_argument('--mc', action='store_true',
-                        help='One MC draw per patch (batch-stat BN + dropout) instead of '
-                             'the default deterministic running-stat inference')
+    parser.add_argument('--deterministic', action='store_true',
+                        help='Running-stat BN, dropout off. Default: one MC draw per patch '
+                             '(generator components in .train(): batch-stat BN + dropout)')
+    parser.add_argument('--halo', type=int, default=4, metavar='H',
+                        help='Latent halo in Y/X (latent px, x8 voxels) stitched from the '
+                             'neighbouring cells; 0 = legacy cell-by-cell decode (default 4)')
+    parser.add_argument('--zhalo', type=int, default=4, metavar='HZ',
+                        help='Latent halo in Z stitched from the adjacent z chunks (default 4)')
     parser.add_argument('--batch', type=int, default=2,
                         help='Patches per decode forward (default 2; decode is ~64 MB '
                              'output per patch plus generator activations)')
@@ -212,7 +232,12 @@ def main():
     epoch = args.epoch if args.epoch is not None else (
         np0.get('epoch') if args.model is None else None)
 
-    eng = Engine.from_registry(model, epoch=epoch, device=args.device, train_mode=args.mc)
+    if args.halo < 0 or args.zhalo < 0:
+        parser.error('--halo/--zhalo must be >= 0')
+    use_halo = args.what == 'decode' and (args.halo > 0 or args.zhalo > 0)
+    eng = Engine.from_registry(model, epoch=epoch, device=args.device,
+                               train_mode=not args.deterministic)
+    halo.install_zchunked_heads(eng)        # exact no-op below 448^3; needed above
     if args.half:
         eng.gan.half()
     if args.model is None:
@@ -230,7 +255,8 @@ def main():
     print(f'{args.what} of {root}: grid {rows} x {cols}, patch {patch}, '
           f'z extent {z_full} (x{up}), chunks {", ".join(names)}, '
           f'{len(cells)} cell(s) each  (model {model} epoch {epoch}, '
-          f'{"mc" if args.mc else "eval"}, device {eng.device})')
+          f'{"eval" if args.deterministic else "mc"}, '
+          f'halo {args.halo}/{args.zhalo}{"" if use_halo else " (off)"}, device {eng.device})')
 
     # Store geometry. Default: full-volume shape, patches placed at absolute
     # coords (offset 0), written sparsely. --crop: shape = ROI bounding box in
@@ -259,7 +285,9 @@ def main():
         write_ome_group(path, name=os.path.basename(path.rstrip('/')))
         with open(os.path.join(path, 'decode_params.json'), 'w') as f:
             json.dump(dict(what=what, codec=root, chunks=names, model=model,
-                           epoch=epoch, mc=args.mc, half=args.half, uprate=up,
+                           epoch=epoch, mc=not args.deterministic, half=args.half,
+                           halo=args.halo if use_halo else 0,
+                           zhalo=args.zhalo if use_halo else 0, uprate=up,
                            patch=patch, shape_zxy=list(shape), store_chunks=list(store_chunks),
                            crop=args.crop, roi_offset_zxy=[off_z, off_x, off_y],
                            window_lo=np0['window_lo'], window_hi=np0['window_hi']), f, indent=2)
@@ -304,6 +332,7 @@ def main():
                             mode='trilinear', align_corners=False)[0, 0]
         return np.clip(np.rint(upv.numpy()), 0, 65535).astype(np.uint16)  # (Y, X, Zc*up)
 
+    cache = halo.CellIndexCache(root) if use_halo else None
     futs = []
     for chunk in names:
         chunk_dir = os.path.join(root, chunk)
@@ -321,10 +350,15 @@ def main():
         t0 = time.perf_counter()
         for i in range(0, len(cells), args.batch):
             batch = cells[i:i + args.batch]
-            idx = [torch.from_numpy(a.astype(np.int64)).to(eng.device)
-                   for a in load_indices(chunk_dir, batch)]
-            sl = eng.latents_from_indices(idx)
-            out = eng.decode(sl) if args.what == 'decode' else eng.reconstruction(sl)
+            if use_halo:
+                sl = halo.batched_stitched_latents(eng, cache, all_names, all_names.index(chunk),
+                                                   batch, args.halo, args.zhalo)
+                out = halo.crop_decoded(eng.decode(sl), args.halo, args.zhalo, up, patch)
+            else:
+                idx = [torch.from_numpy(a.astype(np.int64)).to(eng.device)
+                       for a in load_indices(chunk_dir, batch)]
+                sl = eng.latents_from_indices(idx)
+                out = eng.decode(sl) if args.what == 'decode' else eng.reconstruction(sl)
             if out.shape[2:] != (patch, patch, z_out):
                 raise RuntimeError(f'{args.what} output {tuple(out.shape[2:])}, '
                                    f'expected {(patch, patch, z_out)} — check uprate')

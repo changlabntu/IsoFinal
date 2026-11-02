@@ -2,14 +2,8 @@
 
 from typing import Any, Callable, Dict, Type, Union
 import torch.nn as nn
-import yaml
 
-from networks.EncoderDecoder.edclean import Generator as EDCleanGenerator
-from networks.EncoderDecoder.ed023e import Generator as ED023eGenerator
-from networks.EncoderDecoder.ed023eMS import Generator as ED023eMSGenerator
-from networks.EncoderDecoder.ed023eMSdet import Generator as ED023eMSdetGenerator
 from networks.EncoderDecoder.ed023eMSfpn import Generator as ED023eMSfpnGenerator
-from networks.dsmc import Generator as DSMCGenerator
 from networks.networks import (
     ResnetGenerator, UnetGenerator, UnetGeneratorA,
     NLayerDiscriminator, PixelDiscriminator
@@ -25,7 +19,7 @@ from networks.cyclegan.models import (
 # suffix parsing, so no existing name can match by accident. NOTE the value passed
 # must be the tuple (2,2,2), never True: use_upsample doubles as nn.Upsample's
 # scale_factor, and bool True would coerce to scale_factor=1.0 (silent no-op).
-UPSAMPLE_GENERATORS = {'ed023emsu', 'ed023emsfpnu'}
+UPSAMPLE_GENERATORS = {'ed023emsfpnu'}
 
 
 class NetworkRegistry:
@@ -55,17 +49,6 @@ class NetworkRegistry:
                 mc=kwargs.get('mc', False),
                 use_upsample=(2, 2, 2) if name in UPSAMPLE_GENERATORS else False
             )
-
-        elif name.startswith('ldm'):  # LDM
-            try:
-                # Import dynamically since LDM is optional
-                from networks.ldm.ae import AE
-                with open(f'networks/ldm/{name}.yaml', "r") as f:
-                    config = yaml.load(f, Loader=yaml.Loader)
-                ddconfig = config['model']['params']["ddconfig"]
-                return AE(ddconfig)
-            except ImportError:
-                raise ValueError('LDM module not found. Please install it first.')
 
         elif name.startswith('resnet'):
             n_blocks = int(name.split('_')[-1]) if '_' in name else 9
@@ -155,21 +138,15 @@ class NetworkRegistry:
 network_registry = NetworkRegistry()
 
 # Register generator architectures
-network_registry.register_generator('edclean', EDCleanGenerator)
-network_registry.register_generator('ed023e', ED023eGenerator)
-network_registry.register_generator('ed023ems', ED023eMSGenerator)
 # Detached coarse-head taps (read-only heads) — models/vqcleanMH.py trunk-purity design.
-network_registry.register_generator('ed023emsdet', ED023eMSdetGenerator)
 network_registry.register_generator('ed023emsfpn', ED023eMSfpnGenerator)
 # Resize-conv (anti-checkerboard) variants — same classes, switched by
 # UPSAMPLE_GENERATORS membership in get_generator.
-network_registry.register_generator('ed023emsu', ED023eMSGenerator)
 network_registry.register_generator('ed023emsfpnu', ED023eMSfpnGenerator)
 network_registry.register_generator('resnet', ResnetGenerator)
 network_registry.register_generator('unet', UnetGenerator)
 network_registry.register_generator('uneta', UnetGeneratorA)
 network_registry.register_generator('cyclegan', CycleGANGenerator)
-network_registry.register_generator('dsmc', DSMCGenerator)
 
 # Register discriminator architectures
 network_registry.register_discriminator('cyclegan', CycleGANDiscriminator)
