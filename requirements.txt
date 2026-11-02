@@ -1,0 +1,35 @@
+# Create conda env: conda create -n isoscope python=3.10
+# Note: PyTorch should be installed separately based on your CUDA version
+# Example (on GHCL server): pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu118
+# Example (on NTHU server): pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# Install with: pip install -r requirements.txt
+
+albumentations
+einops
+matplotlib
+mlflow
+numpy
+psutil
+nvidia-ml-py
+opencv-python
+pillow
+python-dotenv
+pytorch-lightning==1.9.5
+pytorch-msssim
+pyyaml
+requests
+scikit-image
+scipy
+setuptools==59.5.0
+tensorboard
+tifffile
+tqdm
+
+# VQ-GAN (taming-transformers)
+taming-transformers-rom1504
+
+# Verification commands
+# PyTorch and CUDA:
+#   python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+# taming-transformers:
+#   python -c "from taming.modules.vqvae.quantize import VectorQuantizer2; print('taming-transformers OK')"
