@@ -18,6 +18,7 @@ THX10_ZARR = os.environ.get('THX10_ZARR', '/media/cheese/Ghc_data3/THX10/thx10cr
 THX10_TIFS = os.environ.get('THX10_TIFS', '/home/cheese/workspace/Data/thx10')
 ZSTEP = 8                                  # XY pixels per Z slice
 FWHM = 2.0 * np.sqrt(2.0 * np.log(2.0))    # Gaussian sigma -> FWHM
+FFT_WORKERS = int(os.environ.get('SYNTH_FFT_WORKERS', '-1'))   # threads per FFT; lowered in worker pools
 
 
 def out_dir(*parts):

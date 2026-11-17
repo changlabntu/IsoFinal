@@ -67,6 +67,8 @@ def main(rerun=False):
     no = _get('noise', noise.run, rerun)
     sp = _get('spectra', spectra.run, rerun)
     win = load_json(os.path.join(OUT, 'estimate', 'window_thx10.json'))
+    shape = load_json(os.path.join(OUT, 'estimate', 'noise_shape_thx10.json'))      # estimate/noise_shape.py
+    width = load_json(os.path.join(OUT, 'estimate', 'width_thx10.json'))            # estimate/calibrate_width.py
     cc, ratio, (grid, prof, pooled_pred) = cross_check(tr, ls)
 
     # equivalent 1D kernel widths, for orientation only
@@ -90,6 +92,19 @@ def main(rerun=False):
                      axial_fibre_fwhm_px=ls['sigma_z'] * FWHM),
         cross_check={k: v for k, v in cc.items() if k not in ('sigma_grid', 'predicted_fwhm')},
     )
+    if shape:
+        from synthetic.estimate.noise_shape import w_of
+        w = np.concatenate([w_of(np.asarray(shape['per_stack']['ux'])), w_of(np.asarray(shape['per_stack']['uy']))])
+        deg['noise']['gain_first_estimate'] = deg['noise']['gain']
+        deg['noise']['gain'] = shape['fit']['gain']
+        deg['noise']['read_std'] = shape['fit']['read_std']
+        deg['noise']['fixed_pattern'] = shape['fit']['fixed_pattern']
+        deg['noise']['resample'] = dict(w_quantiles=np.percentile(w, np.linspace(0, 100, 21)),
+                                        note='in-plane linear interpolation fraction per block, 21 quantiles')
+        for k in ('fixed_pattern_std', 'noise_corr_sigma'):      # superseded by the entries above
+            deg['noise'].pop(k, None)
+    if width:
+        deg['width'] = {k: width[k] for k in ('nominal', 'lo', 'hi', 'source')}
     path = save_json(os.path.join(CONFIG, 'degradation.json'), deg)
 
     import matplotlib
@@ -129,5 +144,6 @@ if __name__ == '__main__':
     a = ap.parse_args()
     deg, path = main(a.rerun)
     import json
-    print(json.dumps({k: deg[k] for k in ('transfer', 'noise', 'window', 'summary', 'cross_check')}, indent=1, default=float))
+    deg = load_json(path)
+    print(json.dumps({k: deg[k] for k in ('transfer', 'noise', 'window', 'summary', 'cross_check')}, indent=1))
     print('wrote', path)

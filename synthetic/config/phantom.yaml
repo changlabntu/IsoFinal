@@ -1,0 +1,72 @@
+# Phantom parameters (synthetic/phantom/generate.py).
+#
+# A value is either a constant or a prior that is drawn once per block:
+#   {lognormal: [median, sigma_of_log]}   {uniform: [lo, hi]}
+# Lengths in XY px, brightness in camera counts above the offset.
+# `variants` override entries of `base`; calibrated against real training
+# stacks with `python -m synthetic.phantom.calibrate`.
+
+base:
+  psf_sigma: 0.75                # isotropic resolution of the truth (the lateral blur)
+  empty_prob: 0.07               # fraction of blocks outside tissue (14 of 200 real stacks)
+  empty_level: 2.0
+
+  # tissue background
+  level: {lognormal: [20.0, 0.13]}        # median background
+  env_contrast: {uniform: [0.10, 0.30]}   # slow modulation, std of log
+  env_corr: 140.0
+  tex_contrast: {uniform: [0.26, 0.46]}   # fine grain on all structure, std of log
+  tex_corr: 2.5
+  tex_slope: 3.0
+
+  # cells: Voronoi foam, dark interiors, brighter walls
+  cell_size: {uniform: [38.0, 85.0]}      # mean seed spacing
+  void_depth: {uniform: [0.35, 0.65]}     # how dark the middle of a cell is (fraction of level)
+  cell_warp: 9.0                          # walls are bent by a smooth displacement of this size
+  cell_warp_corr: 30.0
+  void_edge: 0.35                         # fraction of the cell radius over which it darkens
+  wall_gain: {lognormal: [0.5, 0.5]}      # wall brightness / level
+  wall_width: {uniform: [1.5, 3.5]}
+  wall_patch_contrast: 0.9                # walls come and go, std of log
+  wall_patch_corr: 45.0
+
+  # fibres
+  fibre_density: {lognormal: [8.0e-6, 0.7]}   # fibres per voxel
+  fibre_length: [60.0, 700.0]                 # log-uniform
+  fibre_radius: [1.6, 0.65]                   # lognormal median, sigma of log
+  fibre_thick_fraction: 0.10                  # thick processes
+  fibre_thick_radius: [4.0, 0.30]
+  fibre_thick_dim: 0.7                        # thick processes are dimmer at their peak
+  fibre_radius_max: 8.0
+  fibre_persistence: [12.0, 120.0]            # log-uniform per fibre
+  fibre_brightness: [120.0, 0.50]             # lognormal peak counts
+  fibre_branch: 0.6                           # fraction that start on another fibre
+  fibre_wobble: 0.35                          # brightness variation along a fibre, std of log
+  bead_fraction: 0.6                          # fraction of fibres that carry varicosities
+  bead_spacing: [8.0, 40.0]
+  bead_gain: [1.5, 4.0]
+  bead_radius: 2.4
+
+  # bright bodies
+  blob_density: {lognormal: [2.8e-6, 0.7]}
+  blob_cluster: 0.6                           # fraction placed next to an earlier blob
+  blob_cluster_spread: 14.0
+  blob_radius: [3.8, 0.45]
+  blob_radius_max: 16.0
+  blob_brightness: [130.0, 0.40]
+  blob_edge: 0.6                              # softness of a body's surface (px)
+  blob_aspect: [1.0, 3.0]
+
+  brightness: {lognormal: [1.32, 0.28]}        # scales fibres, blobs and walls together
+
+variants:
+  A: {}
+  B:                                          # fibre-dominated, weak cell outlines
+    wall_gain: {lognormal: [0.2, 0.5]}
+    fibre_density: {lognormal: [1.3e-5, 0.6]}
+    blob_density: {lognormal: [1.3e-6, 0.7]}
+  C:                                          # cell-dominated, few fibres
+    wall_gain: {lognormal: [0.9, 0.5]}
+    cell_size: {uniform: [30.0, 65.0]}
+    fibre_density: {lognormal: [3.0e-6, 0.7]}
+    blob_density: {lognormal: [5.0e-6, 0.7]}

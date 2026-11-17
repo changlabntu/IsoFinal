@@ -5,8 +5,9 @@
          sqrt(R(f_r, fz))                           (estimate/transfer.py)
       -> keep every 8th slice (point sampling, as the THX10 crop did)
       -> per-slice artefacts: intensity flicker, lateral jitter
-      -> camera: offset + Poisson-Gaussian noise    (estimate/noise.py)
-      -> raw counts, and optionally the [-1, 1] training window.
+      -> camera: offset + signal-dependent noise + fixed pattern
+      -> in-plane resampling at a per-block sub-pixel shift (estimate/noise_shape.py)
+      -> integer raw counts, and optionally the [-1, 1] training window.
 
 `deg` everywhere is the dict stored in config/degradation.json.
 """
@@ -14,29 +15,35 @@ import numpy as np
 import scipy.fft as sfft
 from scipy import ndimage as ndi
 
+from synthetic import common
 from synthetic.common import ZSTEP
-from synthetic.estimate.transfer import transfer_amplitude
+
+
+def apply_transfers(truth, transfers, zpad=64, xypad=32):
+    """Blur an isotropic (Z, Y, X) volume with each non-separable transfer in
+    turn (one forward FFT for all of them); yields the blurred volumes.
+    Reflect padding keeps the periodic FFT from wrapping structure around;
+    pass zpad = xypad = 0 when the volume already carries a margin."""
+    v = truth.astype(np.float32)
+    if zpad or xypad:
+        v = np.pad(v, ((zpad, zpad), (xypad, xypad), (xypad, xypad)), mode='reflect')
+    F = sfft.rfftn(v, workers=common.FFT_WORKERS)
+    shape = v.shape
+    del v
+    fz = np.abs(np.fft.fftfreq(shape[0])).astype(np.float32)[:, None, None]
+    fy = np.fft.fftfreq(shape[1]).astype(np.float32)[None, :, None]
+    fx = np.fft.rfftfreq(shape[2]).astype(np.float32)[None, None, :]
+    fr = np.sqrt(fy ** 2 + fx ** 2)
+    for t in transfers:
+        # amplitude = exp(-0.5 (fz / f0)^p), in float32 to keep big blocks affordable
+        amp = np.exp(np.float32(-0.5) * (fz / (np.float32(t['a']) + np.float32(t['b']) * fr)) ** np.float32(t['p']))
+        out = sfft.irfftn(F * amp, s=shape, workers=common.FFT_WORKERS)
+        del amp
+        yield out[zpad:zpad + truth.shape[0], xypad:xypad + truth.shape[1], xypad:xypad + truth.shape[2]].astype(np.float32)
 
 
 def apply_transfer(truth, transfer, zpad=64, xypad=32):
-    """Blur an isotropic (Z, Y, X) volume with the non-separable transfer.
-    Reflect padding keeps the periodic FFT from wrapping structure around."""
-    v = np.pad(truth.astype(np.float32), ((zpad, zpad), (xypad, xypad), (xypad, xypad)), mode='reflect')
-    F = sfft.rfftn(v, workers=-1)
-    fz = np.abs(np.fft.fftfreq(v.shape[0]))[:, None, None]
-    fy = np.fft.fftfreq(v.shape[1])[None, :, None]
-    fx = np.fft.rfftfreq(v.shape[2])[None, None, :]
-    fr = np.sqrt(fy ** 2 + fx ** 2)
-    F *= transfer_amplitude(fr, fz, transfer).astype(np.float32)
-    out = sfft.irfftn(F, s=v.shape, workers=-1)
-    return out[zpad:zpad + truth.shape[0], xypad:xypad + truth.shape[1], xypad:xypad + truth.shape[2]].astype(np.float32)
-
-
-def sample_z(vol, step=ZSTEP, phase=None):
-    """Every `step`-th slice starting at `phase` (default: the centre of the
-    first step, so slice i of the result sits at truth slice phase + i*step)."""
-    phase = step // 2 if phase is None else int(phase)
-    return vol[phase::step], phase
+    return next(apply_transfers(truth, [transfer], zpad, xypad))
 
 
 def slice_artefacts(vol, noise, rng):
@@ -52,25 +59,50 @@ def slice_artefacts(vol, noise, rng):
 
 
 def camera(signal, noise, rng):
-    """signal (counts above offset) -> raw counts with offset and noise.
+    """signal (counts above offset) -> raw counts with offset and white noise.
 
-    var = gain * signal + read_var; `noise_corr_sigma` (px) gives the noise the
-    slight lateral correlation measured in the real data.
+    Slice-independent noise has variance gain * signal + read_std^2. On top of
+    it sits a pattern fixed to the pixel grid (the same in every slice), with
+    variance var0 + slope * min(signal, sat).
     """
     gain = float(noise.get('gain', 1.0))
     read = float(noise.get('read_std', 0.0))
-    n = rng.normal(size=signal.shape).astype(np.float32)
-    cs = float(noise.get('noise_corr_sigma', 0.0))
-    if cs > 0:
-        n = ndi.gaussian_filter(n, (0, cs, cs))
-        n /= n.std()
-    fpn = float(noise.get('fixed_pattern_std', 0.0))
-    temporal = np.sqrt(max(read ** 2 - fpn ** 2, 0.0))      # read_std includes the fixed pattern
-    sd = np.sqrt(np.clip(gain * signal, 0, None) + temporal ** 2)
-    out = signal + float(noise.get('offset', 0.0)) + sd * n
-    if fpn > 0:                                             # same pattern in every slice
-        out = out + fpn * rng.normal(size=(1,) + signal.shape[1:]).astype(np.float32)
-    return out
+    S = np.clip(signal, 0, None)
+    out = signal + float(noise.get('offset', 0.0)) + \
+        np.sqrt(gain * S + read ** 2) * rng.standard_normal(signal.shape, dtype=np.float32)
+    fp = noise.get('fixed_pattern')
+    if fp:
+        Vf = fp['var0'] + fp['slope'] * np.minimum(S, fp['sat'])
+        out += np.sqrt(Vf) * rng.standard_normal((1,) + signal.shape[1:], dtype=np.float32)    # same in every slice
+    return out.astype(np.float32)
+
+
+def draw_resample(noise, rng):
+    """Per-block in-plane interpolation fractions (wx, wy), drawn from the
+    distribution measured on the real stacks (estimate/noise_shape.py)."""
+    q = (noise.get('resample') or {}).get('w_quantiles')
+    if not q:
+        return 0.0, 0.0
+    q = np.asarray(q, float)
+    grid = np.linspace(0, 1, len(q))
+    return float(np.interp(rng.random(), grid, q)), float(np.interp(rng.random(), grid, q))
+
+
+def resample_xy(raw, wx, wy):
+    """Linear interpolation at a fractional shift, as the real volume went
+    through: (Z, Y + 1, X + 1) -> (Z, Y, X). Smooths signal and noise alike."""
+    a = (1.0 - wx) * raw[:, :, :-1] + wx * raw[:, :, 1:]
+    return ((1.0 - wy) * a[:, :-1] + wy * a[:, 1:]).astype(np.float32)
+
+
+def acquire(signal, noise, rng, w=None, artefacts=True):
+    """Low-resolution signal with one spare pixel in Y and X, (Z, Y + 1, X + 1)
+    counts above offset -> integer raw counts (Z, Y, X): slice artefacts,
+    camera noise, in-plane resampling, rounding."""
+    if artefacts:
+        signal = slice_artefacts(signal, noise, rng)
+    wx, wy = draw_resample(noise, rng) if w is None else w
+    return np.rint(resample_xy(camera(signal, noise, rng), wx, wy))
 
 
 def to_window(raw, lo, hi):
@@ -84,14 +116,18 @@ def truth_to_window(truth, deg):
     return to_window(truth + deg['noise'].get('offset', 0.0), w['lo'], w['hi'])
 
 
-def degrade(truth, deg, seed=0, phase=None, with_noise=True):
-    """Full pipeline. Returns dict(raw (Z/8, Y, X) counts, phase, blurred)."""
+def scale_transfer(transfer, width_scale):
+    """Transfer whose axial kernel is `width_scale` times wider (f0 divided by it)."""
+    return dict(a=transfer['a'] / width_scale, b=transfer['b'] / width_scale, p=transfer['p'])
+
+
+def degrade(truth, deg, seed=0, with_noise=True, width_scale=1.0):
+    """Convenience pipeline for a truth block without a rendered margin
+    (reflect padding stands in for it). Returns raw counts, (Z/8, Y-1, X-1)
+    with noise, (Z/8, Y, X) without."""
     rng = np.random.default_rng(seed)
-    blurred = apply_transfer(truth, deg['transfer'])
-    low, phase = sample_z(blurred, deg.get('zstep', ZSTEP), phase)
+    blurred = apply_transfer(truth, scale_transfer(deg['transfer'], width_scale))
+    low = np.clip(blurred[::deg.get('zstep', ZSTEP)], 0, None)
     if with_noise:
-        low = slice_artefacts(low, deg['noise'], rng)
-        raw = camera(low, deg['noise'], rng)
-    else:
-        raw = low + deg['noise'].get('offset', 0.0)
-    return dict(raw=raw.astype(np.float32), phase=phase)
+        return acquire(low, deg['noise'], rng)
+    return low + deg['noise'].get('offset', 0.0)
