@@ -70,3 +70,14 @@ variants:
     cell_size: {uniform: [30.0, 65.0]}
     fibre_density: {lognormal: [3.0e-6, 0.7]}
     blob_density: {lognormal: [5.0e-6, 0.7]}
+  F:                                          # long smooth fibres, few bodies, faint cells (not in synthA)
+    wall_gain: {lognormal: [0.12, 0.4]}
+    fibre_density: {lognormal: [3.5e-6, 0.5]}
+    fibre_length: [300.0, 3000.0]
+    fibre_persistence: [80.0, 600.0]
+    fibre_radius: [1.4, 0.45]
+    fibre_thick_fraction: 0.03
+    fibre_branch: 0.4
+    bead_fraction: 0.7
+    bead_gain: [1.3, 2.5]
+    blob_density: {lognormal: [3.0e-7, 0.7]}
