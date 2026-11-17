@@ -42,9 +42,9 @@
     "jitter_std_px": 0.04402083300194161
   },
   "window": {
-    "lo": 113.0,
-    "hi": 588.0,
-    "source": "inference window (training window not resolved)"
+    "lo": 98.99999906519295,
+    "hi": 673.0000020972449,
+    "source": "fitted on 2 training TIFFs located in the zarr"
   },
   "summary": {
     "axial_kernel_fwhm_px_by_lateral_frequency": {

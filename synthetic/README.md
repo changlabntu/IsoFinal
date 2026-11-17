@@ -56,6 +56,10 @@ python -m synthetic.estimate.selftest              # estimators on a phantom wit
   within 5 %.
 - Noise: offset 101 counts, variance = 0.83 x signal + 1.3^2, slight lateral correlation
   (lag-1 0.25). Flicker (0.4 %) and jitter (0.04 px) are negligible.
+- Training window: the training TIFFs are `(raw - 99) / (673 - 99) * 2 - 1`, recovered exactly
+  (fit residual ~1e-8) by locating two TIFFs in the zarr. Note that inference
+  (`encode_stack.py --window 113 588`) uses a different window, a 1.21x contrast stretch
+  relative to what the model was trained on.
 - The Z stack is oversampled relative to this blur (kernel 3-5 slices wide), so the task the
   model faces is mostly axial *deblurring*, not only interpolation.
 
