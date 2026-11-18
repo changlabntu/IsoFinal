@@ -147,6 +147,8 @@ $DATASET/synthF/
   manifest.json          seed, variant, width and scene parameters of every block
 ```
 
+To rebuild the dataset on another machine, see `REBUILD.md`.
+
 Truth lives outside `train/` and `val/`, so the training loader cannot reach it. A block is
 rendered with a margin (96 px in Z, 48 px in XY) that is blurred with it and then cropped, so
 slices near the faces receive light from structure outside the block, as real data does.
