@@ -7,6 +7,9 @@
                                                                     # a training run under $LOGS/synthF/synthF/
     python -m synthetic.evaluate table [--set val]
 
+The dataset is read from $DATASET/synthF (or --root) and runs from $LOGS; both
+default to the `cheese` entry of cfg/env.json.
+
 Each held-out block gives four 24 x 192 x 192 crops of the degraded stack. A
 method turns a crop into a 192^3 volume; only the crop interior is scored.
 
@@ -144,10 +147,15 @@ class Model:
         return np.ascontiguousarray(out[0, 0].float().cpu().numpy().transpose(2, 0, 1))
 
 
+def env_path(key):
+    """$DATASET or $LOGS; if unset, the `cheese` entry of cfg/env.json (as in build_dataset)."""
+    return os.environ.get(key) or load_json(os.path.join(REPO, 'cfg', 'env.json'))['cheese'][key]
+
+
 def run_dir(name):
     if os.path.isdir(name):
         return name
-    return os.path.join(os.environ.get('LOGS', '/home/cheese/workspace/logs/'), 'synthF', 'synthF', name)
+    return os.path.join(env_path('LOGS'), 'synthF', 'synthF', name)
 
 
 # ---------------------------------------------------------------- per-crop work (runs in a process pool)
@@ -290,7 +298,7 @@ def run(method, root, sets=SETS, epoch=None, tag=None, workers=8, limit=None):
         fn, truth_shift = None, float(method[5:] or 0)
     else:
         fn = Model(method, epoch)
-    tag = tag or (method.strip('/').replace('/', '_') + ('_e%03d' % epoch if epoch else ''))
+    tag = tag or (method.strip('/').replace('/', '_') + ('' if epoch is None else '_e%03d' % epoch))
     results = []
     with mp.get_context('spawn').Pool(workers) as pool:
         for split in sets:
@@ -328,7 +336,7 @@ if __name__ == '__main__':
     ap.add_argument('cmd', choices=['run', 'table'])
     ap.add_argument('--method', type=str, default='cubic', help='cubic | truth | truth+<planes> | registry name | run name or directory')
     ap.add_argument('--epoch', type=str, default=None, help='checkpoint epoch(s), comma-separated (default: the latest)')
-    ap.add_argument('--root', type=str, default='/home/cheese/workspace/Data/synthF')
+    ap.add_argument('--root', type=str, default=None, help='dataset folder (default: $DATASET/synthF)')
     ap.add_argument('--sets', type=str, default=','.join(SETS))
     ap.add_argument('--set', type=str, default=None, help='table: only this set')
     ap.add_argument('--tag', type=str, default=None)
@@ -339,5 +347,6 @@ if __name__ == '__main__':
         table(a.set)
     else:
         print(HEAD)
+        root = a.root or os.path.join(env_path('DATASET'), 'synthF')
         for e in ([int(x) for x in a.epoch.split(',')] if a.epoch else [None]):
-            run(a.method, a.root, a.sets.split(','), e, a.tag, a.workers, a.limit)
+            run(a.method, root, a.sets.split(','), e, a.tag, a.workers, a.limit)

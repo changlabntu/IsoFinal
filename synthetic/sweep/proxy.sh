@@ -12,15 +12,18 @@
 # checkpoint of epoch EPOCHS exists (checkpoints are written every 10 epochs).
 #
 # Run inside the isofinal env. Checkpoints: $LOGS/synthF/synthF/NAME/checkpoints/<time>/
+# On another machine set ENV_NAME to its entry of cfg/env.json (default: cheese); DATASET
+# and LOGS come from that entry unless they are set in the environment.
 set -u
 NAME=$1; GPU=$2; EPOCHS=$3; shift 3
 cd "$(dirname "$0")/../.."
-LOGS=${LOGS:-/home/cheese/workspace/logs/}
+ENV_NAME=${ENV_NAME:-cheese}
+export LOGS=${LOGS:-$(python -c "import json; print(json.load(open('cfg/env.json'))['$ENV_NAME']['LOGS'])")}
 RUN=$LOGS/synthF/synthF/$NAME
 LOG=synthetic/out/logs/train_${NAME//\//_}.log
 mkdir -p synthetic/out/logs
 CUDA_VISIBLE_DEVICES=$GPU NO_ALBUMENTATIONS_UPDATE=1 python -u train.py --yaml aisr \
-  --prj synthF/$NAME --env cheese --dataset synthF/ --direction deg/ \
+  --prj synthF/$NAME --env "$ENV_NAME" --dataset synthF/ --direction deg/ \
   --nm 11g --gamma 0.7 --gamma_lo -0.8 --cropsize 128 --cropz 16 --dsp 1 --lamb 5 \
   --models MScleanQD --num_scales 4 --lr 0.0005 --netG ed023emsfpnu --netD patch_16 \
   --pyr_detach --adv_ms 0.5 --lamb_coarse 1 --tracking_uri synth \

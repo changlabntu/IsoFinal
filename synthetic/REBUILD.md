@@ -65,7 +65,7 @@ $DATASET/synthF/
    and takes about 8 minutes:
 
    ```
-   python -m synthetic.evaluate run --method cubic --root $DATASET/synthF
+   python -m synthetic.evaluate run --method cubic
    ```
 
    Expected (psnr / corr / z_res / false / recall):
@@ -78,9 +78,13 @@ $DATASET/synthF/
 
 ## Use
 
-- **Train:** the unchanged `train.py` with `--dataset synthF/ --direction deg/`. `--env` must
-  name an entry of `cfg/env.json` for that machine (it supplies `DATASET` and `LOGS`).
-- **Score:** `python -m synthetic.evaluate run --method RUN --epoch N --root $DATASET/synthF`,
-  with `LOGS` set so that the run is found under `$LOGS/synthF/synthF/RUN`.
+Add an entry for the machine to `cfg/env.json` (its `DATASET` and `LOGS` folders), then:
+
+- **Train:** the unchanged `train.py` with `--dataset synthF/ --direction deg/ --env ENTRY`.
+  The proxy recipe: `ENV_NAME=ENTRY bash synthetic/sweep/proxy.sh MScleanQD/NAME GPU EPOCHS`;
+  arguments after `EPOCHS` override the recipe (e.g. `--cropsize 192 --cropz 24`).
+- **Score:** `python -m synthetic.evaluate run --method MScleanQD/NAME --epoch N`, with
+  `DATASET` and `LOGS` exported (the same folders as in the entry); the run is looked up
+  under `$LOGS/synthF/synthF/`.
 
 See `README.md` (Stage 3) for the recipe and the meaning of the scores.

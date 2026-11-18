@@ -21,7 +21,7 @@ unless a name says "window" (`[-1, 1]`, the training TIFF units).
 |---|---|
 | 1. Degradation estimate | done |
 | 2. Phantom, blur-width calibration, dataset, realism | done, accepted 2026-11-18 |
-| 3. Baseline on the proxy, scored against truth | in progress |
+| 3. Baseline on the proxy, scored against truth | done: two runs to epoch 100, numbers below |
 | 4. Sweep | not started |
 | 5. Confirm on the A6000 machine, train THX10 | not started |
 
@@ -284,10 +284,11 @@ about three quarters of the voxels in a typical stack.
 
 ```
 bash synthetic/sweep/proxy.sh MScleanQD/base_r1 0 100             # proxy training run on GPU 0, stopped at epoch 100
+                                                                   # (other machine: ENV_NAME=<entry of cfg/env.json> bash ...)
 python -m synthetic.evaluate run --method cubic                    # interpolation only: the floor
 python -m synthetic.evaluate run --method truth                    # sanity: must score perfectly
 python -m synthetic.evaluate run --method skipU_qd                 # the existing THX10 model
-python -m synthetic.evaluate run --method MScleanQD/base_r1 --epoch 50,100
+python -m synthetic.evaluate run --method MScleanQD/base_r1 --epoch 10,20,50,100   # checkpoints of a run
 python -m synthetic.evaluate table --set val
 ```
 
@@ -332,6 +333,53 @@ Reference points, nominal blur width (24 blocks; the other two widths in bracket
   17.2 px), with almost no blur spill (`false`) and somewhat lower recall. It was trained on
   real data, so this is orientation, not the baseline.
 - For blurred outputs the offset is only defined to about half a plane (cubic reads -0.4).
+
+### Proxy baseline (two runs of the same command, 100 epochs each)
+
+Epoch 100, nominal blur width; narrow / wide width in brackets:
+
+| method | psnr | corr | z_res (px) | false | recall | Z offset (planes) |
+|---|---|---|---|---|---|---|
+| cubic interpolation | 21.05 | 0.703 (0.727 / 0.679) | 17.2 (15.5 / 18.9) | 0.077 | 0.928 | -0.4 |
+| run 1 | 20.30 | 0.740 (0.751 / 0.726) | 13.8 (13.1 / 14.8) | 0.010 | 0.882 | 13.8 |
+| run 2 | 20.19 | 0.732 (0.744 / 0.717) | 14.9 (13.8 / 15.3) | 0.010 | 0.869 | 14.0 |
+| **baseline (mean of the runs)** | **20.25** | **0.736** (0.748 / 0.722) | **14.3** (13.5 / 15.1) | **0.010** | **0.876** | 13.9 |
+| run-to-run difference | 0.13 | 0.010 | 0.7 | 0.001 | 0.021 | 0.1 |
+
+The run-to-run difference is taken between the two runs' averages over epochs 40-100. It
+rests on two runs only (a third was not trained). `z_res` is the noisiest number: it also
+moves by about 0.25 px from one checkpoint to the next within a run.
+
+Learning curve on the nominal set (`corr` / `z_res` / `recall`):
+
+| epoch | run 1 | run 2 |
+|---|---|---|
+| 10 | 0.709 / 15.9 / 0.873 | 0.704 / 16.6 / 0.855 |
+| 20 | 0.722 / 15.8 / 0.874 | 0.727 / 15.2 / 0.863 |
+| 30 | 0.736 / 14.5 / 0.879 | 0.729 / 14.7 / 0.862 |
+| 40 | 0.744 / 14.0 / 0.885 | 0.727 / 14.6 / 0.861 |
+| 50 | 0.743 / 14.2 / 0.884 | 0.729 / 14.4 / 0.853 |
+| 60 | 0.742 / 13.7 / 0.883 | 0.733 / 14.5 / 0.858 |
+| 80 | 0.740 / 14.3 / 0.884 | 0.732 / 15.1 / 0.867 |
+| 100 | 0.740 / 13.8 / 0.882 | 0.732 / 14.9 / 0.869 |
+
+- **Budget: 50 epochs.** Both runs stop improving by epoch 40-50 (about 4 h on one RTX 3090).
+- **The scores separate the baseline from interpolation.** Correlation is higher by 0.033 and
+  `z_res` lower by 2.9 px, three to four times the run-to-run difference; `false` falls from
+  0.077 to 0.010. The margin holds at all three blur widths and is smallest at the narrow
+  one (0.021 and 2.0 px).
+- **The baseline is not better on every number.** Recall (0.876 against 0.928) and PSNR are
+  below interpolation: the output has 2.9 % bright voxels where the truth has 8.0 % (cubic
+  6.9 %), so it drops dim structure.
+- **The gain in axial resolution is small:** 17.2 to 14.3 px, where the slice spacing is 8 px
+  and the truth scores 1. This is the room the sweep has to work with.
+- **The 14-plane Z offset is reproduced** (13.3 / 13.9 / 14.5 at the three widths), so it
+  comes from the loss and not from the THX10 data.
+- A design counts as better than the baseline only if it wins by more than the run-to-run
+  difference: 0.010 in `corr`, about 1 px in `z_res`, 0.02 in `recall`.
+
+These numbers belong to the proxy recipe (crop 128 x 128 x 16, batch 1). Runs with the full
+crop (192 x 192 x 24) need their own baseline.
 
 ## Decisions at the stage 2 gate (accepted 2026-11-18)
 
