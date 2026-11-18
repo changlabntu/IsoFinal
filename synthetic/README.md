@@ -20,8 +20,8 @@ unless a name says "window" (`[-1, 1]`, the training TIFF units).
 | Stage | State |
 |---|---|
 | 1. Degradation estimate | done |
-| 2. Phantom, blur-width calibration, dataset, realism | done, **awaiting review** (gate) |
-| 3. Training / evaluation harness | not started |
+| 2. Phantom, blur-width calibration, dataset, realism | done, accepted 2026-11-18 |
+| 3. Baseline on the proxy, scored against truth | in progress |
 | 4. Sweep | not started |
 | 5. Confirm on the A6000 machine, train THX10 | not started |
 
@@ -278,14 +278,64 @@ about three quarters of the voxels in a typical stack.
 - The generator changes for variant F leave A and B bit-identical to the truth stored in
   `synthA`, and a block renders identically in separate processes.
 
-## Decisions at the stage 2 gate
+## Stage 3 — baseline on the proxy, scored against truth
 
-1. Is the phantom good enough to proceed, given that a classifier separates it from real data
-   almost every time? The alternatives are more work on morphology, or truth taken from real
-   images (a near-isotropic dataset, or THX10 itself reduced in XY).
-2. Blur width: accept nominal 1.07 with range 0.96-1.19, or first measure it on a sub-block of
-   the dense Z stack?
-3. How should truth be scored given the headroom: clipped to the data window, or with a wider
-   output range treated as a design option?
-4. Noise band: leave the three small residuals unmodelled, or add row noise and
-   position-linked resampling to the phantom and refit the transfer tail?
+```
+bash synthetic/sweep/proxy.sh MScleanQD/base_r1 0 100             # proxy training run on GPU 0, stopped at epoch 100
+python -m synthetic.evaluate run --method cubic                    # interpolation only: the floor
+python -m synthetic.evaluate run --method truth                    # sanity: must score perfectly
+python -m synthetic.evaluate run --method skipU_qd                 # the existing THX10 model
+python -m synthetic.evaluate run --method MScleanQD/base_r1 --epoch 50,100
+python -m synthetic.evaluate table --set val
+```
+
+**Training needs no new code.** `synthF` has the format of the real data, so the unchanged
+`train.py` runs on it with `--dataset synthF/ --direction deg/`. `sweep/proxy.sh` only records
+the recipe: the README baseline command with the crop reduced to 128 x 128 x 16 and batch 1
+(13.9 GB, 1.4 steps/s on one RTX 3090; one epoch = 400 steps, about 5 min). `--n_epochs` is
+left at its default, because the cosine schedule spans it and the default keeps the learning
+rate flat as in the original run; the script stops the run at the requested epoch.
+`train.py` is unseeded, so repeating a command gives the run-to-run spread.
+
+**Scoring (`evaluate.py`).** Four 24 x 192 x 192 crops per held-out block go through the
+method; the interior of each 192^3 output is compared with the stored truth.
+- Alignment: the truth is resampled to the in-plane sub-pixel shift of its stack; along Z one
+  offset per method is found by cross-correlation, reported and removed.
+- Intensities in window units, truth and output clipped to [-0.8, 1] (the baseline's input
+  floor, 156 counts, to the window ceiling).
+
+| number | meaning |
+|---|---|
+| `psnr`, `corr` | fidelity to the clipped truth; `corr_u` is against truth not clipped at the ceiling |
+| `z_res` | axial resolution: half period (px) at which the correlation between output and truth, taken per Z frequency, falls below 0.5. 8 = the slice spacing, 1 = perfect |
+| `false` | share of bright output voxels with no truth structure within 3 px |
+| `recall` | share of bright truth voxels with output within 3 px |
+
+Checks: the truth as output scores perfectly (correlation 1.000, `z_res` 1.0, `false` 0,
+`recall` 1, offset 0.00); truth displaced by 3 and by -2.5 planes is read as 3.00 and -2.50;
+the replayed in-plane shift registers every checked block better than no shift.
+
+Reference points, nominal blur width (24 blocks; the other two widths in brackets):
+
+| method | psnr | corr | z_res (px) | false | recall | Z offset (planes) |
+|---|---|---|---|---|---|---|
+| cubic interpolation | 21.05 | 0.703 | 17.2 (15.5 / 18.9) | 0.077 | 0.928 | -0.4 |
+| `skipU_qd` (trained on real THX10) | 20.07 | 0.711 | 14.5 (13.6 / 15.4) | 0.008 | 0.829 | 13.6 |
+
+- **The existing model places structure about 14 planes (1.7 slices) deeper than it is.** Its
+  loss compares the maximum over output planes [32 j, 32 j + 32) with input slice 4 j, which
+  centres the content of a slice in that block instead of at its own plane. The offset is
+  constant, so the score removes it, but output and input are not registered in Z.
+- After alignment it resolves slightly finer axial detail than interpolation (14.5 against
+  17.2 px), with almost no blur spill (`false`) and somewhat lower recall. It was trained on
+  real data, so this is orientation, not the baseline.
+- For blurred outputs the offset is only defined to about half a plane (cubic reads -0.4).
+
+## Decisions at the stage 2 gate (accepted 2026-11-18)
+
+1. Proceed with `synthF` although a classifier separates it from real data. It is used only
+   to choose a design; the THX10 model is retrained on real data, so only the ranking of
+   designs has to carry over, and that is checked on real data in stage 5.
+2. Blur width: nominal 1.07, range 0.96-1.19.
+3. Truth is scored clipped to the data window, with the unclipped comparison alongside.
+4. The noise-band residuals stay unmodelled.
