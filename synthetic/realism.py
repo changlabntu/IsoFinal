@@ -7,6 +7,7 @@ computed on real training TIFFs and on synthetic ones, then compared.
     python -m synthetic.realism stats  --real           # cache real statistics
     python -m synthetic.realism compare --synth DIR     # table + figure
     python -m synthetic.realism classify --synth DIR    # real-vs-synthetic classifier
+    python -m synthetic.realism noiseband [--synth DIR] # noise band by signal level (no --synth: real vs real)
     python -m synthetic.realism headroom --root ROOT    # truth brightness vs the window
 
 Statistics per stack (all in raw camera counts, i.e. the window undone):
@@ -119,6 +120,24 @@ def real_files(split='train', n=200, seed=0):
     files = sorted(glob.glob(os.path.join(THX10_TIFS, split, 'roiD', '*.tif')))
     rng = np.random.default_rng(seed)
     return [files[i] for i in sorted(rng.choice(len(files), min(n, len(files)), replace=False))]
+
+
+def synth_files(folder, n=None, only=None):
+    """TIFFs of a synthetic folder, optionally only those of the variants in
+    `only` (e.g. 'F' or 'A,B'; read from the manifest of the dataset or preview)."""
+    files = sorted(glob.glob(os.path.join(folder, '*.tif')))
+    if only:
+        for m in (os.path.join(folder, 'manifest.json'), os.path.join(folder, '..', '..', 'manifest.json')):
+            if os.path.isfile(m):
+                man = load_json(m)
+                break
+        else:
+            raise FileNotFoundError('no manifest.json for ' + folder)
+        blocks = man['blocks'] if isinstance(man, dict) else man
+        keep = {b['name'] for b in blocks if b['variant'] in only.split(',')}
+        # dataset stacks are <name>.tif, preview stacks <name>_<variant>.tif
+        files = [f for f in files if os.path.basename(f)[:-4].split('_')[0] in keep]
+    return files[:n] if n else files
 
 
 def real_stats(n=200, refresh=False):
@@ -279,12 +298,13 @@ def print_table(table):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['stats', 'compare', 'classify', 'headroom'])
+    ap.add_argument('cmd', choices=['stats', 'compare', 'classify', 'noiseband', 'headroom'])
     ap.add_argument('--root', type=str, default=None, help='dataset root (for headroom)')
     ap.add_argument('--real', action='store_true')
     ap.add_argument('--synth', type=str, default=None, help='folder of synthetic (48,384,384) TIFFs')
     ap.add_argument('--n', type=int, default=200)
     ap.add_argument('--tag', type=str, default='synth')
+    ap.add_argument('--only', type=str, default=None, help='use only these phantom variants, e.g. F or A,B')
     ap.add_argument('--model_domain', action='store_true', help='classify: apply the baseline input mapping first')
     a = ap.parse_args()
     if a.cmd == 'stats':
@@ -292,7 +312,7 @@ if __name__ == '__main__':
         f = pooled_transfer(d)
         print('real: %d stacks; pooled transfer a %.4f b %.3f p %.2f' % (len(d['mean']), f['a'], f['b'], f['p']))
     elif a.cmd == 'compare':
-        files = sorted(glob.glob(os.path.join(a.synth, '*.tif')))[:a.n]
+        files = synth_files(a.synth, a.n, a.only)
         t, p = compare(real_stats(a.n), collect(files), a.tag)
         print_table(t); print(p)
         print(montage(real_files(n=a.n), files, a.tag))
@@ -301,6 +321,10 @@ if __name__ == '__main__':
         for k, v in h.items():
             if k != 'per_block':
                 print('%-28s %s' % (k, np.round(v, 4)))
+    elif a.cmd == 'noiseband':
+        from synthetic.classify import noise_band
+        noise_band(synth_files(a.synth, only=a.only) if a.synth else None, n=a.n, tag=a.tag)
     else:
         from synthetic.classify import run as run_classifier
-        print(run_classifier(a.synth, n=a.n, tag=a.tag, model_domain=(0.7, -0.8) if a.model_domain else None))
+        print(run_classifier(a.synth, n=a.n, tag=a.tag, model_domain=(0.7, -0.8) if a.model_domain else None,
+                             files=synth_files(a.synth, only=a.only)))

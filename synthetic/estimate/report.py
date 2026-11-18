@@ -94,13 +94,17 @@ def main(rerun=False):
     )
     if shape:
         from synthetic.estimate.noise_shape import w_of
-        w = np.concatenate([w_of(np.asarray(shape['per_stack']['ux'])), w_of(np.asarray(shape['per_stack']['uy']))])
+        wx, wy = w_of(np.asarray(shape['per_stack']['ux'])), w_of(np.asarray(shape['per_stack']['uy']))
+        w = np.concatenate([wx, wy])
         deg['noise']['gain_first_estimate'] = deg['noise']['gain']
         deg['noise']['gain'] = shape['fit']['gain']
         deg['noise']['read_std'] = shape['fit']['read_std']
         deg['noise']['fixed_pattern'] = shape['fit']['fixed_pattern']
-        deg['noise']['resample'] = dict(w_quantiles=np.percentile(w, np.linspace(0, 100, 21)),
-                                        note='in-plane linear interpolation fraction per block, 21 quantiles')
+        # X and Y fractions belong together: one pair per tile of the real volume
+        deg['noise']['resample'] = dict(w_pairs=np.round(np.stack([wx, wy], 1), 3),
+                                        w_quantiles=np.percentile(w, np.linspace(0, 100, 21)),
+                                        note='in-plane linear interpolation fraction per block: (x, y) pairs measured '
+                                             'on real stacks, and 21 quantiles of both axes pooled')
         for k in ('fixed_pattern_std', 'noise_corr_sigma'):      # superseded by the entries above
             deg['noise'].pop(k, None)
     if width:

@@ -78,8 +78,14 @@ def camera(signal, noise, rng):
 
 
 def draw_resample(noise, rng):
-    """Per-block in-plane interpolation fractions (wx, wy), drawn from the
-    distribution measured on the real stacks (estimate/noise_shape.py)."""
+    """Per-block in-plane interpolation fractions (wx, wy): one of the pairs
+    measured on the real stacks (estimate/noise_shape.py). The real volume has
+    one pair per tile, so X and Y are drawn together; without measured pairs,
+    each axis is drawn from the pooled quantiles."""
+    pairs = (noise.get('resample') or {}).get('w_pairs')
+    if pairs:
+        wx, wy = pairs[int(rng.integers(len(pairs)))]
+        return float(wx), float(wy)
     q = (noise.get('resample') or {}).get('w_quantiles')
     if not q:
         return 0.0, 0.0

@@ -4,6 +4,7 @@
     <tag>_degraded_z8.tif    the same volume as THX10 would record it: blurred,
                              every 8th plane, noise; uint16 raw counts, Z spacing 8
     <tag>_blurred_iso.tif    (--blurred) blurred but not yet sampled or noisy
+    <tag>_preview.png        sections of the truth and the degraded stack
 
 Counts are in the units of the THX10 zarr, so the training window (99-673) is
 a sensible display range. Slice i of the degraded stack sits at truth plane 8 i.
@@ -54,7 +55,32 @@ def export(size=(512, 768, 768), seed=0, variant='A', width_scale=None, blurred=
                 n_fibres=len(meta['centrelines']), n_bodies=len(meta['blobs']),
                 scene={k: v for k, v in P.items() if not isinstance(v, (list, dict))}, files=paths)
     save_json(tag + '.json', info)
+    info['preview'] = preview(tag, deg['window'])
     return info
+
+
+def preview(tag, window):
+    """Sections of an exported volume side by side -> <tag>_preview.png."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import tifffile
+    t = tifffile.imread(tag + '_truth_iso.tif')
+    d = tifffile.imread(tag + '_degraded_z8.tif')
+    Z, Y, X = t.shape
+    kw = dict(cmap='gray', vmin=window['lo'], vmax=0.6 * window['hi'], interpolation='nearest')
+    fig, ax = plt.subplots(2, 3, figsize=(24, 14))
+    ax[0, 0].imshow(t[Z // 2], **kw); ax[0, 0].set_title('truth XY (plane %d)' % (Z // 2))
+    ax[0, 1].imshow(t[Z // 2 - 16:Z // 2 + 16].max(0), **kw); ax[0, 1].set_title('truth, max over 32 planes')
+    ax[0, 2].imshow(d[Z // 2 // ZSTEP], **kw); ax[0, 2].set_title('degraded XY (slice %d)' % (Z // 2 // ZSTEP))
+    ax[1, 0].imshow(t[:, Y // 2], **kw); ax[1, 0].set_title('truth XZ')
+    ax[1, 1].imshow(t[:, Y // 2 - 16:Y // 2 + 16].max(1), **kw); ax[1, 1].set_title('truth XZ, max over 32 px in Y')
+    ax[1, 2].imshow(np.repeat(d[:, Y // 2], ZSTEP, axis=0), **kw); ax[1, 2].set_title('degraded XZ (slices repeated 8x)')
+    for a_ in ax.ravel():
+        a_.axis('off')
+    fig.tight_layout(pad=0.3)
+    fig.savefig(tag + '_preview.png', dpi=50); plt.close(fig)
+    return tag + '_preview.png'
 
 
 if __name__ == '__main__':
@@ -70,3 +96,4 @@ if __name__ == '__main__':
     print('%d fibres, %d bodies, blur width scale %.2f' % (o['n_fibres'], o['n_bodies'], o['width_scale']))
     for k, p in o['files'].items():
         print('%-9s %s' % (k, p))
+    print('%-9s %s' % ('preview', o['preview']))

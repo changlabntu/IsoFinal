@@ -89,8 +89,9 @@ class _Grid:
         return g / g.std()
 
 
-def _deposit(N, pts, w):
-    """Trilinear deposit of weights w at float points (n, 3) -> float32 volume."""
+def _deposit(N, pts, w, wrap=False):
+    """Trilinear deposit of weights w at float points (n, 3) -> float32 volume.
+    Points outside the block are dropped, or wrapped round it if `wrap`."""
     n = np.array(N)
     p0 = np.floor(pts).astype(np.int64)
     fr = (pts - p0).astype(np.float32)
@@ -101,6 +102,10 @@ def _deposit(N, pts, w):
                 idx = p0 + (dz, dy, dx)
                 ww = w * (fr[:, 0] if dz else 1 - fr[:, 0]) * (fr[:, 1] if dy else 1 - fr[:, 1]) * \
                     (fr[:, 2] if dx else 1 - fr[:, 2])
+                if wrap:
+                    idx_all.append(np.ravel_multi_index((idx % n).T, N))
+                    w_all.append(ww)
+                    continue
                 ok = np.all((idx >= 0) & (idx < n), axis=1)
                 idx_all.append(np.ravel_multi_index(idx[ok].T, N))
                 w_all.append(ww[ok])
@@ -128,8 +133,13 @@ def _walk(rng, starts, lengths, persistence, step):
 
 
 def _fibres(rng, N, P, grid, acc, step=0.5):
-    """Render fibres into the Fourier accumulator. Returns per-fibre metadata."""
+    """Render fibres into the Fourier accumulator. Returns per-fibre metadata.
+
+    With `fibre_wrap` a fibre that leaves the block re-enters at the opposite
+    face, so long fibres keep their full length and the density is uniform
+    (otherwise every fibre starts inside the block and is cut at its faces)."""
     nvox = float(np.prod(N))
+    wrap = bool(P.get('fibre_wrap', False))
     n_fib = int(rng.poisson(P['fibre_density'] * nvox))
     if n_fib == 0:
         return [], [], []
@@ -158,6 +168,18 @@ def _fibres(rng, N, P, grid, acc, step=0.5):
     radii = np.minimum(radii, P['fibre_radius_max'] - 1e-3)
     bri = P['brightness'] * P['fibre_brightness'][0] * np.exp(rng.normal(size=n_fib) * P['fibre_brightness'][1])
     bri[thick] *= P['fibre_thick_dim']
+    # regional labelling density: fibres are brighter in some regions than in others
+    fenv = None
+    if P.get('fibre_env_contrast', 0) > 0:
+        c = P['fibre_env_contrast']
+        fenv = np.exp(c * grid.random_field(rng, P['fibre_env_corr'], 3.5) - 0.5 * c * c)
+
+    def regional(pts):
+        if fenv is None:
+            return 1.0
+        i = np.floor(pts).astype(np.int64)
+        i = i % np.array(N) if wrap else np.clip(i, 0, np.array(N) - 1)
+        return fenv[i[:, 0], i[:, 1], i[:, 2]]
     edges = np.array([0.0, 0.9, 1.3, 1.8, 2.5, 3.5, 5.0, P['fibre_radius_max']])
     which = np.clip(np.searchsorted(edges, radii, side='right') - 1, 0, len(edges) - 2)
     bead_pts, bead_w = [], []
@@ -173,7 +195,7 @@ def _fibres(rng, N, P, grid, acc, step=0.5):
             m = len(pts)
             t = np.cumsum(rng.normal(size=m)) * np.sqrt(step / 30.0)
             t -= np.linspace(t[0], t[-1], m)
-            wob = np.exp(P['fibre_wobble'] * t / max(t.std(), 1e-6))
+            wob = np.exp(P['fibre_wobble'] * t / max(t.std(), 1e-6)) * regional(pts)
             # a line of unit linear density blurred by sigma rc peaks at 1 / (2 pi rc^2)
             pts_k.append(pts)
             w_k.append((bri[j] * 2 * np.pi * rc ** 2 * step) * wob)
@@ -188,7 +210,7 @@ def _fibres(rng, N, P, grid, acc, step=0.5):
                     rb = max(P['bead_radius'], 1.3 * radii[j])
                     bead_pts.append(pts[i])
                     bead_w.append((bri[j] * wob[i] * (g - 1), rb))
-        layer = _deposit(N, np.concatenate(pts_k), np.concatenate(w_k).astype(np.float32))
+        layer = _deposit(N, np.concatenate(pts_k), np.concatenate(w_k).astype(np.float32), wrap)
         acc += grid.fft(layer) * grid.gauss(rc)
     if bead_pts:
         bp = np.array(bead_pts)
@@ -199,8 +221,10 @@ def _fibres(rng, N, P, grid, acc, step=0.5):
             if s.any():
                 rr = float(np.median(rb[s]))
                 # a point of weight w blurred by sigma peaks at w / ((2 pi)^1.5 sigma^3)
-                layer = _deposit(N, bp[s], (amp[s] * (2 * np.pi) ** 1.5 * rr ** 3).astype(np.float32))
+                layer = _deposit(N, bp[s], (amp[s] * (2 * np.pi) ** 1.5 * rr ** 3).astype(np.float32), wrap)
                 acc += grid.fft(layer) * grid.gauss(rr)
+    if wrap:
+        lines = [l % np.array(N, dtype=np.float64) for l in lines]
     return lines, radii, bri
 
 

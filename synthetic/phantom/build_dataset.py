@@ -18,7 +18,11 @@ Layout under $DATASET/<name>/ (loader-compatible, truth outside train/val):
     manifest.json            per-block seed, variant, width, scene parameters
 
     python -m synthetic.phantom.build_dataset --name synthA --n_train 400 --n_val 24
+    python -m synthetic.phantom.build_dataset --name synthF --variants F,A,F,B,F,F,A,F,C,F
     python -m synthetic.phantom.build_dataset --preview 24 --tag r1    # calibration set
+
+Block i gets variant `variants[i % len(variants)]`, so repeating a letter sets
+the mix (the second line is 60 % F, 20 % A, 10 % B, 10 % C).
 """
 import argparse
 import json
