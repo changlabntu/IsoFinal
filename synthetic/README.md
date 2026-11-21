@@ -450,6 +450,26 @@ noise-free stack, so 0 is exact; the noise of a stored stack is 9.7 on this scal
   scores 13 / 12 / 17 instead of 10 (variant without a floor): the minimum is at the right
   width, and an error of 10 % costs little.
 
+**Old against new, including a trained model.**
+`python -m synthetic.sweep.loss_at_truth --model MScleanQD/base_r1 --epoch 100` puts three
+volumes through both losses (L1 x 1000 against the stored stack, as in training):
+
+| volume as output | old loss (max over 32 planes) | new loss, floor read as crop background | new loss, one level (-0.90) |
+|---|---|---|---|
+| truth | 243 | 20 | 25 |
+| volume that was not deblurred | 46 | 33 | 37 |
+| the baseline model's own output | 44 | 64 | 69 |
+
+- The old loss gives the baseline's output the value it had in training (0.037-0.041 in the
+  log) and cannot tell it from a volume that was not deblurred; the truth scores more than
+  five times worse.
+- The new loss ranks the truth first and the baseline's output last. Moving that output in
+  Z changes its loss by about 1, so what the new loss objects to is mainly the missing
+  intensity (2.9 % bright voxels where the truth has 8.0 %), not the offset.
+- At the training crop (16 x 128 x 128) the new loss is usable if 2 slices are left out at
+  each end: 17.9 at the truth against 16.8 on the larger crops. The first and last slice
+  alone score 54 and 32, because the blur reaches beyond the crop.
+
 So the loss to train in item 1 is: undo the input mapping, replace the floor by the
 background level, blur with the measured transfer, take every 8th plane, redo the mapping,
 compare with every input slice. Two forms are worth a run each: the floor kept with the
