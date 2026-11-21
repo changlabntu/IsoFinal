@@ -159,24 +159,30 @@ NEW = ('new, floor as it is', 'new, floor read as crop background', 'new, floor 
 SMALL = ((8, 64, 64), (24, 192, 192), (16, 128, 200), (20, 220, 80))    # training-size crops (z0 in slices, y0, x0)
 
 
-def crops_task(job):
-    """Every loss on the crops of one block, for the truth, the blurred volume
-    and a model's output (`outs`: one 192^3 volume per evaluate.CROPS entry)."""
+def block_volumes(b):
+    """A held-out block: the stored stack, the truth on the stack grid (not
+    limited), the stack without noise, and the nominal blur as a function."""
     import tifffile
     from synthetic.phantom.degrade import apply_transfers, scale_transfer
-    b, outs = job
     deg = ev.degradation()
     w, off = deg['window'], deg['noise']['offset']
     w0 = (off - w['lo']) / (w['hi'] - w['lo']) * 2 - 1
     tr = scale_transfer(deg['transfer'], deg['width']['nominal'])
     blur = lambda v, zpad=64, xypad=32: next(apply_transfers(v, [tr], zpad, xypad))
-    level = lambda xc: float(np.median(xc[xc < LO])) if (xc < LO).any() else BG_FIXED
-
     x = tifffile.imread(b['deg'])
     wx, wy = ev.resample_shift(b['seed'], deg)
     t = on_stack_grid(ev._truth_block(b['truth'], deg), wx, wy)
     ev._TRUTH.clear()
     nf = np.clip(np.maximum(blur(t)[::ZSTEP], w0), -1, 1)               # from the whole block, as in block_task
+    return x, t, nf, blur
+
+
+def crops_task(job):
+    """Every loss on the crops of one block, for the truth, the blurred volume
+    and a model's output (`outs`: one 192^3 volume per evaluate.CROPS entry)."""
+    b, outs = job
+    level = lambda xc: float(np.median(xc[xc < LO])) if (xc < LO).any() else BG_FIXED
+    x, t, nf, blur = block_volumes(b)
     t = np.clip(t, LO, 1)
 
     res = {}

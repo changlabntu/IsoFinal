@@ -22,7 +22,7 @@ unless a name says "window" (`[-1, 1]`, the training TIFF units).
 | 1. Degradation estimate | done |
 | 2. Phantom, blur-width calibration, dataset, realism | done, accepted 2026-11-18 |
 | 3. Baseline on the proxy, scored against truth | done: two runs to epoch 100, numbers below |
-| 4. Sweep | loss check done (no training yet) |
+| 4. Sweep | item 1: loss checked and implemented (`models/MScleanQDPSF.py`); training runs pending (A6000) |
 | 5. Confirm on the A6000 machine, train THX10 | not started |
 
 ## Stage 1 — degradation estimate
@@ -470,11 +470,74 @@ volumes through both losses (L1 x 1000 against the stored stack, as in training)
   each end: 17.9 at the truth against 16.8 on the larger crops. The first and last slice
   alone score 54 and 32, because the blur reaches beyond the crop.
 
-So the loss to train in item 1 is: undo the input mapping, replace the floor by the
-background level, blur with the measured transfer, take every 8th plane, redo the mapping,
-compare with every input slice. Two forms are worth a run each: the floor kept with the
-background level as an argument, and no floor at all (`--gamma_lo -1`), which is exact but
-also changes what the model sees.
+### Item 1: the blur-then-sample loss (`models/MScleanQDPSF.py`)
+
+`--models MScleanQDPSF --l1how psf --skipl1 1` replaces the Z-consistency term. The class
+inherits from MScleanQD (quantizer dropout and everything else unchanged) and overrides one
+method; with any other `--l1how` it is MScleanQD exactly.
+
+The generator output (and each coarse head on its own grid) goes through the acquisition:
+
+1. Undo the input mapping (floor `--gamma_lo`, exponent `--gamma`) to get linear intensity,
+   and read the floor as the background level `--psf_bg`.
+2. Blur with the measured 3D transfer (FFT, reflect padding).
+3. Take the slice positions: slice i at the centre of its 8 planes.
+4. Redo the input mapping and take L1 against every input slice, leaving out
+   `--psf_margin` slices at each end of the crop, where the blur needs planes beyond it.
+
+| argument | default | meaning |
+|---|---|---|
+| `--psf_bg` | -0.9 | background level the output floor stands for, in the units of `--gamma_lo` (128 counts). Measured as the median below the floor: `synthF` -0.90, real THX10 -0.885 |
+| `--psf_width` | 1.07 | axial blur width relative to the fit (the nominal width of stage 2) |
+| `--psf_a`, `--psf_b`, `--psf_p` | 0.00604, 0.04292, 1.3855 | the THX10 transfer fit of `config/degradation.json` |
+| `--psf_margin` | 2 | slices left out of the loss at each end of the crop |
+
+Without a floor the forward model is exact, but the model then also sees the background
+and its noise: `--gamma_lo -1 --psf_bg -1`.
+
+The output is expected at plane 8 i + 3.5 for slice i (the baseline: 8 i + 14), so
+`evaluate.py` should report a Z offset near 3.5.
+
+Test of the code (`python -m synthetic.sweep.psf_loss_test`, 24 blocks, 96 training-size
+crops, a model built from `MScleanQDPSF.py` with the baseline's weights):
+
+- The training loss agrees with the same steps done in numpy with the dataset's blur code
+  to 5e-5, and its gradients are finite, also for an output that sits at the floor.
+- Through the training code path (`get_projection` + `add_loss_l1`), L1 x 1000:
+
+  | volume as output | old loss (`max`, `--skipl1 4`) | new loss (`psf`, `--skipl1 1`) |
+  |---|---|---|
+  | truth, at plane 8 i + 3.5 | 244 | 25 |
+  | truth, at plane 8 i + 15 | 239 | 37 |
+  | volume that was not deblurred | 43 | 36 |
+  | the baseline's own output | 34 | 71 |
+
+- One epoch of training runs at the baseline's speed (1.4 steps/s on one RTX 3090), with
+  the quantizer-dropout losses present, and the checkpoint loads in `evaluate.py`.
+
+**Runs for the A6000 machine** (proxy recipe, one GPU each, so the baseline numbers of
+stage 3 apply; `export ENV_NAME=<entry of cfg/env.json>` first):
+
+```
+P="--models MScleanQDPSF --l1how psf --skipl1 1"
+bash synthetic/sweep/proxy.sh MScleanQDPSF/psf_r1 0 50 $P                               # floor kept
+bash synthetic/sweep/proxy.sh MScleanQDPSF/psf_r2 1 50 $P                               # repeat, for the spread
+bash synthetic/sweep/proxy.sh MScleanQDPSF/nofloor_r1 2 50 $P --gamma_lo -1 --psf_bg -1 # no floor
+bash synthetic/sweep/proxy.sh MScleanQDPSF/nofloor_r2 3 50 $P --gamma_lo -1 --psf_bg -1
+bash synthetic/sweep/proxy.sh MScleanQDPSF/wide_r1 4 50 $P --psf_width 1.39             # blur width wrong by 1.3x
+bash synthetic/sweep/proxy.sh MScleanQD/base_r3 5 50                                    # baseline again, same machine
+for r in MScleanQDPSF/psf_r1 MScleanQDPSF/psf_r2 MScleanQDPSF/nofloor_r1 MScleanQDPSF/nofloor_r2 \
+         MScleanQDPSF/wide_r1 MScleanQD/base_r3; do
+  python -m synthetic.evaluate run --method $r --epoch 10,20,30,40 --sets val
+  python -m synthetic.evaluate run --method $r --epoch 50
+done
+python -m synthetic.evaluate table --set val
+```
+
+Each `proxy.sh` call blocks until its run has stopped (about 4.5 h for 50 epochs), so start
+them in separate shells or with `&`. A design counts as better than the baseline (0.736 /
+14.3 px / 0.876 in `corr` / `z_res` / `recall`) only beyond the run-to-run difference, at
+all three blur widths.
 
 Limits: this tests two volumes, so it can reject a loss but not prove one. The blur here is
 reflect-padded instead of using the rendered margin; on two re-rendered blocks that changes
