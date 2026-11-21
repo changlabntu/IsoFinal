@@ -7,8 +7,8 @@
                                                                     # a training run under $LOGS/synthF/synthF/
     python -m synthetic.evaluate table [--set val]
 
-The dataset is read from $DATASET/synthF (or --root) and runs from $LOGS; both
-default to the `cheese` entry of cfg/env.json.
+The dataset is read from $DATASET/synthF (or --root) and runs from $LOGS; if
+unset, both come from the cfg/env.json entry named by $ENV_NAME (default: cheese).
 
 Each held-out block gives four 24 x 192 x 192 crops of the degraded stack. A
 method turns a crop into a 192^3 volume; only the crop interior is scored.
@@ -148,8 +148,8 @@ class Model:
 
 
 def env_path(key):
-    """$DATASET or $LOGS; if unset, the `cheese` entry of cfg/env.json (as in build_dataset)."""
-    return os.environ.get(key) or load_json(os.path.join(REPO, 'cfg', 'env.json'))['cheese'][key]
+    """$DATASET or $LOGS; if unset, from the cfg/env.json entry named by $ENV_NAME (default: cheese)."""
+    return os.environ.get(key) or load_json(os.path.join(REPO, 'cfg', 'env.json'))[os.environ.get('ENV_NAME', 'cheese')][key]
 
 
 def run_dir(name):

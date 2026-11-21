@@ -168,7 +168,7 @@ if __name__ == '__main__':
     else:
         deg = load_json(os.path.join(CONFIG, 'degradation.json'))
         env = load_json(os.path.join(common.REPO, 'cfg', 'env.json'))
-        root = os.path.join(os.environ.get('DATASET') or env['cheese']['DATASET'], a.name)
+        root = os.path.join(os.environ.get('DATASET') or env[os.environ.get('ENV_NAME', 'cheese')]['DATASET'], a.name)
         os.makedirs(root, exist_ok=True)
         jobs = val_jobs(root, a.n_val, 900000, deg, variants) + train_jobs(root, a.n_train, 100000, deg, variants)
         print('%d blocks -> %s' % (len(jobs), root), flush=True)

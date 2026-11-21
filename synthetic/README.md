@@ -284,7 +284,7 @@ about three quarters of the voxels in a typical stack.
 
 ```
 bash synthetic/sweep/proxy.sh MScleanQD/base_r1 0 100             # proxy training run on GPU 0, stopped at epoch 100
-                                                                   # (other machine: ENV_NAME=<entry of cfg/env.json> bash ...)
+                                                                   # (other machine: export ENV_NAME=<entry of cfg/env.json> first)
 python -m synthetic.evaluate run --method cubic                    # interpolation only: the floor
 python -m synthetic.evaluate run --method truth                    # sanity: must score perfectly
 python -m synthetic.evaluate run --method skipU_qd                 # the existing THX10 model
@@ -378,8 +378,32 @@ Learning curve on the nominal set (`corr` / `z_res` / `recall`):
 - A design counts as better than the baseline only if it wins by more than the run-to-run
   difference: 0.010 in `corr`, about 1 px in `z_res`, 0.02 in `recall`.
 
-These numbers belong to the proxy recipe (crop 128 x 128 x 16, batch 1). Runs with the full
-crop (192 x 192 x 24) need their own baseline.
+### Full recipe (crop 192 x 192 x 24): not run yet
+
+The numbers above belong to the proxy recipe (crop 128 x 128 x 16, batch 1). The full crop
+does not fit a 24 GB GPU (the first step allocates 22.5 GB at `-b 1` and fails), so it has no
+baseline yet and is meant for the A6000 machine. Once that machine has an entry in
+`cfg/env.json` and the data is rebuilt there (`REBUILD.md`):
+
+```
+export ENV_NAME=<entry of cfg/env.json>
+bash synthetic/sweep/proxy.sh MScleanQD/full_r1 0,1 100 --cropsize 192 --cropz 24
+python -m synthetic.evaluate run --method MScleanQD/full_r1 --epoch 10,20,30,40,50,60,70,80,90,100 --sets val
+python -m synthetic.evaluate run --method MScleanQD/full_r1 --epoch 100 --sets val_narrow,val_wide
+python -m synthetic.evaluate table --set val
+```
+
+- Arguments after the epoch count override the proxy recipe; here only the crop changes.
+- The GPU argument may be a list: `0,1` trains one run on two GPUs. This was tested here at
+  the proxy crop only (launch, first checkpoint, stop, scoring of that checkpoint). After the
+  stop the other GPU's process takes up to a minute to exit.
+- Effective batch is 2 x `-b` x GPUs: 2 in the proxy, 24 in the original THX10 run (`-b 3`
+  on 4 GPUs). Whether `-b 2` fits 48 GB is not known.
+- Epochs do not carry over from the proxy. One epoch is always 400 crops, but only
+  200 / (`-b` x GPUs) weight updates (proxy: 200). Score every 10th checkpoint first and
+  take the budget from that curve, as was done for the proxy.
+- Train the same command under a second name (`full_r2`) for the run-to-run difference.
+- Scoring does not depend on the training crop: about 7 GB on one GPU, 2 minutes per set.
 
 ## Decisions at the stage 2 gate (accepted 2026-11-18)
 

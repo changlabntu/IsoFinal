@@ -16,13 +16,14 @@ noise, window), and fixed seeds, so it can be rebuilt anywhere.
 From the repo root:
 
 ```
-export DATASET=/path/to/Data/        # the folder that holds the datasets
+export ENV_NAME=<entry>              # the machine's entry of cfg/env.json (or: export DATASET=/path/to/Data/)
 python -m synthetic.phantom.build_dataset --name synthF --n_train 400 --n_val 24 --workers 8 \
     --variants F,A,F,B,F,F,A,F,C,F
 ```
 
-About 40 minutes with 8 workers (each uses 4 FFT threads). Set `DATASET`: without it the
-script falls back to the `cheese` entry of `cfg/env.json`.
+About 40 minutes with 8 workers (each uses 4 FFT threads). Without `ENV_NAME` or `DATASET`
+the script falls back to the `cheese` entry of `cfg/env.json`. Below, `$DATASET` stands for
+the `DATASET` folder of the entry.
 
 Result:
 
@@ -78,13 +79,16 @@ $DATASET/synthF/
 
 ## Use
 
-Add an entry for the machine to `cfg/env.json` (its `DATASET` and `LOGS` folders), then:
+With the entry for the machine in `cfg/env.json` (its `DATASET` and `LOGS` folders) and
+`ENV_NAME` exported:
 
 - **Train:** the unchanged `train.py` with `--dataset synthF/ --direction deg/ --env ENTRY`.
-  The proxy recipe: `ENV_NAME=ENTRY bash synthetic/sweep/proxy.sh MScleanQD/NAME GPU EPOCHS`;
-  arguments after `EPOCHS` override the recipe (e.g. `--cropsize 192 --cropz 24`).
-- **Score:** `python -m synthetic.evaluate run --method MScleanQD/NAME --epoch N`, with
-  `DATASET` and `LOGS` exported (the same folders as in the entry); the run is looked up
-  under `$LOGS/synthF/synthF/`.
+  The proxy recipe: `bash synthetic/sweep/proxy.sh MScleanQD/NAME GPU EPOCHS`; arguments
+  after `EPOCHS` override the recipe (e.g. `--cropsize 192 --cropz 24`).
+- **Score:** `python -m synthetic.evaluate run --method MScleanQD/NAME --epoch N`; the run is
+  looked up under `$LOGS/synthF/synthF/`.
 
-See `README.md` (Stage 3) for the recipe and the meaning of the scores.
+`README.md` has the baseline numbers (Stage 3, "Proxy baseline") and the commands for the
+full-crop run ("Full recipe").
+
+See `README.md` (Stage 3) for the meaning of the scores.
