@@ -515,6 +515,24 @@ crops, a model built from `MScleanQDPSF.py` with the baseline's weights):
 - One epoch of training runs at the baseline's speed (1.4 steps/s on one RTX 3090), with
   the quantizer-dropout losses present, and the checkpoint loads in `evaluate.py`.
 
+**First training check** (this machine, 10 epochs, one run each, nominal set; not part of
+the sweep):
+
+| run, epoch 10 | psnr | corr | z_res (px) | false | recall | bright voxels | Z offset |
+|---|---|---|---|---|---|---|---|
+| baseline (two runs) | 20.2 | 0.709 / 0.704 | 15.9 / 16.6 | 0.011 | 0.873 / 0.855 | 3.0 % | 13.7 / 13.5 |
+| new loss, floor kept | 21.9 | 0.782 | 15.6 | 0.041 | 0.984 | 11.0 % | 2.6 |
+| new loss, no floor | 19.8 | 0.581 | 27.7 | 0.072 | 0.913 | 6.2 % | 6.4 |
+| truth | | | | | | 8.0 % | |
+
+- With the floor kept the new loss trains stably and does what the check predicted: the
+  Z offset is gone (2.6 planes, 3.5 expected), recall rises from 0.87 to 0.98 and the
+  correlation from 0.71 to 0.78, above the converged baseline (0.736).
+- It now puts too much into the volume instead of too little: 11 % bright voxels where the
+  truth has 8 %, and `false` rises from 0.011 to 0.041. Axial resolution is unchanged at
+  this epoch; the baseline kept improving until epoch 40-50, so that needs the full runs.
+- Without a floor it is far behind at epoch 10 on every number.
+
 **Runs for the A6000 machine** (proxy recipe, one GPU each, so the baseline numbers of
 stage 3 apply; `export ENV_NAME=<entry of cfg/env.json>` first):
 
@@ -522,17 +540,20 @@ stage 3 apply; `export ENV_NAME=<entry of cfg/env.json>` first):
 P="--models MScleanQDPSF --l1how psf --skipl1 1"
 bash synthetic/sweep/proxy.sh MScleanQDPSF/psf_r1 0 50 $P                               # floor kept
 bash synthetic/sweep/proxy.sh MScleanQDPSF/psf_r2 1 50 $P                               # repeat, for the spread
-bash synthetic/sweep/proxy.sh MScleanQDPSF/nofloor_r1 2 50 $P --gamma_lo -1 --psf_bg -1 # no floor
-bash synthetic/sweep/proxy.sh MScleanQDPSF/nofloor_r2 3 50 $P --gamma_lo -1 --psf_bg -1
+bash synthetic/sweep/proxy.sh MScleanQDPSF/bg085_r1 2 50 $P --psf_bg -0.85              # higher background level
+bash synthetic/sweep/proxy.sh MScleanQDPSF/nofloor_r1 3 50 $P --gamma_lo -1 --psf_bg -1 # no floor
 bash synthetic/sweep/proxy.sh MScleanQDPSF/wide_r1 4 50 $P --psf_width 1.39             # blur width wrong by 1.3x
 bash synthetic/sweep/proxy.sh MScleanQD/base_r3 5 50                                    # baseline again, same machine
-for r in MScleanQDPSF/psf_r1 MScleanQDPSF/psf_r2 MScleanQDPSF/nofloor_r1 MScleanQDPSF/nofloor_r2 \
+for r in MScleanQDPSF/psf_r1 MScleanQDPSF/psf_r2 MScleanQDPSF/bg085_r1 MScleanQDPSF/nofloor_r1 \
          MScleanQDPSF/wide_r1 MScleanQD/base_r3; do
   python -m synthetic.evaluate run --method $r --epoch 10,20,30,40 --sets val
   python -m synthetic.evaluate run --method $r --epoch 50
 done
 python -m synthetic.evaluate table --set val
 ```
+
+The `bg085` run tests whether the surplus of bright voxels comes from the assumed
+background level (the stacks range from -0.92 to -0.84).
 
 Each `proxy.sh` call blocks until its run has stopped (about 4.5 h for 50 epochs), so start
 them in separate shells or with `&`. A design counts as better than the baseline (0.736 /
