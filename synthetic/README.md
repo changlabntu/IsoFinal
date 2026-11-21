@@ -22,7 +22,7 @@ unless a name says "window" (`[-1, 1]`, the training TIFF units).
 | 1. Degradation estimate | done |
 | 2. Phantom, blur-width calibration, dataset, realism | done, accepted 2026-11-18 |
 | 3. Baseline on the proxy, scored against truth | done: two runs to epoch 100, numbers below |
-| 4. Sweep | not started |
+| 4. Sweep | loss check done (no training yet) |
 | 5. Confirm on the A6000 machine, train THX10 | not started |
 
 ## Stage 1 — degradation estimate
@@ -404,6 +404,61 @@ python -m synthetic.evaluate table --set val
   take the budget from that curve, as was done for the proxy.
 - Train the same command under a second name (`full_r2`) for the run-to-run difference.
 - Scoring does not depend on the training crop: about 7 GB on one GPU, 2 minutes per set.
+
+## Stage 4 — sweep
+
+### Item 1, before any training: which Z-consistency loss is correct?
+
+```
+python -m synthetic.sweep.loss_at_truth          # 24 held-out blocks, CPU only, about 8 min
+```
+
+A correct loss must be satisfied by the truth. `sweep/loss_at_truth.py` evaluates each
+candidate with a known volume in the place of the generator output: the truth (limited to
+what the model can output), and the noise-free stack interpolated along Z (a volume that was
+not deblurred at all). Numbers are L1 x 1000 in the model's input units against the
+noise-free stack, so 0 is exact; the noise of a stored stack is 9.7 on this scale.
+
+| loss | truth as output | its best position (planes) | blurred volume as output |
+|---|---|---|---|
+| max over 32 planes, every 4th slice (the baseline) | 248 | +16 | 42 |
+| max over 8 planes, every slice | 113 | +3 | 10 |
+| mean over 32 planes, every 4th slice | 67 | +16 | 9 |
+| mean over 8 planes, every slice | 73 | +4 | 2 |
+| one plane (`dsp`), every slice | 80 | +4 | 0 |
+| measured blur, then every 8th plane, in model units | 43 | 0 | 29 |
+| the same in linear intensity, output floor taken as it is | 69 | 0 | 39 |
+| the same, floor read as the stack's background level | 18 | 0 | 32 |
+| the same, floor read as one level for all stacks (-0.90) | 24 | 0 | 36 |
+| the same, output without a floor (ceiling kept) | 10 | 0 | 24 |
+| the same, output not limited (the exact forward model) | 0 | 0 | |
+
+- **No existing option is satisfied by the truth**, and each of them scores the volume that
+  was not deblurred far better than the truth. Their data term pulls towards a blurred
+  output; all sharpening comes from the adversarial term, working against it.
+- **The baseline loss is lowest for a sharp volume placed 16 planes too deep.** This is the
+  Z offset of the trained models (14 planes).
+- **Blurring with the measured transfer is not enough.** The baseline's input floor is
+  156 counts and the output cannot go below it, but the background is about 128 counts
+  (real THX10: 132; 80 % of the voxels are below the floor). Blurring the floor-limited
+  truth lifts everything near a structure, and the loss again prefers the blurred volume.
+- **It becomes correct once the floor is read as the background level**: the truth then
+  scores below the blurred volume, with the minimum at its own position. Without a floor in
+  the output the truth is at the noise level; the rest is the window ceiling, which bright
+  structures exceed.
+- **Blur width.** With a width of 0.96 / 1.19 / 1.39 instead of the data's 1.07 the truth
+  scores 13 / 12 / 17 instead of 10 (variant without a floor): the minimum is at the right
+  width, and an error of 10 % costs little.
+
+So the loss to train in item 1 is: undo the input mapping, replace the floor by the
+background level, blur with the measured transfer, take every 8th plane, redo the mapping,
+compare with every input slice. Two forms are worth a run each: the floor kept with the
+background level as an argument, and no floor at all (`--gamma_lo -1`), which is exact but
+also changes what the model sees.
+
+Limits: this tests two volumes, so it can reject a loss but not prove one. The blur here is
+reflect-padded instead of using the rendered margin; on two re-rendered blocks that changes
+the noise-free stack by 0.4 and 1.6 on the scale above.
 
 ## Decisions at the stage 2 gate (accepted 2026-11-18)
 
