@@ -57,7 +57,9 @@ class GAN(BaseModel):
             ddconfig['out_ch'] = 1
         self.hparams.netG = self.hparams.netG
 
-        self.hparams.final = 'tanh'
+        # With --residual the heads output an unbounded correction on top of the
+        # interpolated input, so they must not be squashed by tanh.
+        self.hparams.final = 'none' if getattr(self.hparams, 'residual', False) else 'tanh'
         self.net_g, self.net_d = self.set_networks()
 
         # Separate per-scale discriminators for the coarse (1/2, 1/4) outputs. The patch
@@ -221,6 +223,9 @@ class GAN(BaseModel):
                             help='detach the avg-pooled full-res target so pyramid consistency only trains the coarse heads (distillation)')
         parser.add_argument("--adv_ms", type=float, default=1.0,
                             help='multiplier on the 1/2 and 1/4 adversarial loss (on top of --adv); adv_ms=0 skips the coarse discriminators entirely')
+        parser.add_argument("--residual", action='store_true', default=False,
+                            help='every output head = trilinear-upsampled input at its resolution + net_g correction '
+                                 '(final activation becomes linear instead of tanh)')
         # VQ specific arguments
         parser.add_argument("--ldmyaml", type=str, default='vqgan')
         parser.add_argument("--use_ema", action='store_true',
@@ -437,6 +442,11 @@ class GAN(BaseModel):
 
         # 3D generator: shared trunk + lateral-inject path
         out = self._netg_decode(scale_latents, batch_size=self.oriX.shape[0])
+        if getattr(self.hparams, 'residual', False):
+            # Residual over interpolation: the measured band passes through exactly;
+            # net_g (linear heads) learns only the correction, at every scale.
+            out = {k: v + F.interpolate(self.oriX, size=v.shape[2:], mode='trilinear')
+                   for k, v in out.items()}
         self.XupX = out['out0']         # full-res isotropic output
         self.XupX128 = out['out128']    # 1/2-res output head
         self.XupX64 = out['out64']      # 1/4-res output head
@@ -487,7 +497,10 @@ class GAN(BaseModel):
             B = x.shape[0]
             slice_latents, _, raw_indices = self.encode(self.vol_to_slices(x))
             if method == 'full':
-                return self._netg_decode(slice_latents, batch_size=B)['out0']
+                out0 = self._netg_decode(slice_latents, batch_size=B)['out0']
+                if getattr(self.hparams, 'residual', False):
+                    out0 = out0 + F.interpolate(x, size=out0.shape[2:], mode='trilinear')
+                return out0
             H, W = slice_latents[0].shape[-2:]
             Z = slice_latents[0].shape[0] // B
             scale_latents = [self.slices_to_vol(s, B) for s in slice_latents]
