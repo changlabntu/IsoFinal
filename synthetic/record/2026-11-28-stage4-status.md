@@ -18,8 +18,10 @@ PSF-sweep and audit eras.
   codebook perplexities 3.1 / 4.3 / 10 / 20 → effective rate roughly
   half nominal (codebooks underutilized — capacity is not the binding
   constraint).
-- Decoder: 3D ConvTranspose stages decode the summed quantized latent
-  (16³ grid) to the 8×-Z-upsampled volume. Codes-only.
+- Decoder: 3D nearest-upsample + conv stages (netG=ed023emsfpnu uses
+  the use_upsample branch of deconv3d_bn_block, not ConvTranspose)
+  decode the summed quantized latent (16³ grid) to the 8×-Z-upsampled
+  volume. Codes-only.
 - Multi-scale structure: kept. It is additional rate plus a residual
   decomposition (coarse = structure, fine = detail) — a fidelity aid at
   fixed codebook size and the stronger compression story. The
@@ -30,18 +32,27 @@ PSF-sweep and audit eras.
 ## Scoreboard (val; z_res = 0.5/fz50 px, lower is better)
 
 Reference ladder: truth ~1 · lateral ~2 (ceiling) · 8 sampling
-half-period (milestone) · ~13–14 edge of PSF data support · 16 Nyquist
-period · 17.2 interpolation floor.
+half-period (milestone) · ~14–18.5 per-bin SNR=1 support edge and
+~15–16 Wiener information bound *(erratum 2026-11-28, independent
+re-audit (two-agent validation): the earlier "11–13.5, nearly flat
+across lateral frequency" edge is refuted — bit-exact degradation
+replay shows the noise is colored (corner floor was the spectrum
+minimum, not conservative) and the edge falls ~2× across fr; per-bin
+SNR=1 edge z_res ≈ 14.0–18.5, best-linear-reweighting (Wiener) bound
+≈ 14.7–15.8, pooled raw-data coherence crosses 0.5 at ≈ 17.0–17.2 =
+the cubic score. Everything below ~15–16, including 12.4 and 11.1, is
+prior-driven reconstruction; see 2026-11-28-trackA-validation.md)* ·
+16 Nyquist period · 17.2 interpolation floor.
 
 **Track A — claimed model (codes-only decode):**
 
 | rung | z_res | lever |
 |---|---|---|
 | interpolation | 17.2 | — |
-| PSF replay loss | 13.4 | data term (blind beyond ~13: axial PSF transfer ~1e-3) |
+| PSF replay loss | 13.4 | data term (the old "axial transfer ~1e-3" was the fr=0 worst case — see audit round 2. *Erratum 2026-11-28, independent re-audit: "carried to the measured SNR support edge ≈ 13.5" relied on the refuted 11–13.5 edge; 13.4 is already below the ~15–16 Wiener information bound, i.e. partly prior-driven — see 2026-11-28-trackA-validation.md*) |
 | adv_ms 0 | ~13.2 | concentrate adversarial weight at full res |
 | + GroupNorm / no dropout / annealing | 12.4 | train–eval consistency, pacing |
-| + R1 γ=1 + TTUR | **11.1** | D regularization (r1ttur_r1 e260: 11.1 / corr 0.841 / false 0.012; seed band 11.1–11.5, replicated) |
+| + R1 γ=1 + TTUR | **11.1** | D regularization (r1ttur_r1 e260: 11.1 / corr 0.841 / false 0.0125; band 11.1–11.5 across two UNSEEDED re-runs — both seed=None, so this is an unseeded re-run, not a seeded replication; per-audit 2026-11-28, headline is min-of-scored-epochs, plateau mean ~11.3) |
 
 **Carry-forward claim-intact checkpoint: MScleanQDPSFX/r1ttur_r1 e260.**
 
@@ -52,7 +63,7 @@ model):**
 | run | z_res | note |
 |---|---|---|
 | combo (inject_x + R1 + TTUR) | 10.6–10.8 | two seeds; flat 90+ epochs |
-| + multi-plane 2.5D D (`--mp_d 5`) | **10.5** | mpd_r1 e140; flat ~150 epochs |
+| + multi-plane 2.5D D (`--mp_d 5`) | **10.5** | mpd_r1 e140; flat ~150 epochs. **Attribution invalidated 2026-11-28**: the mp real construction (shifted slice copies) is degenerate — the mp game collapsed by ~e15 (axmp 24 / dmp 4e-8 vs the healthy main game's axx 0.71); the 10.6→10.5 step is within the seed band. Score stands, mechanism does not (next-models.md, "mp_d construction audit"). |
 | + hinge (`--d_hinge`) | 10.6 | faster early, but false creeps 0.010→0.020 |
 
 **Bottleneck price: ~0.3–0.7 px at matched epochs** (Track B − Track A
@@ -67,29 +78,43 @@ mpd_r2 (replication of 10.5) · mpdhinge_r1 (`--mp_d 5 --d_hinge`) ·
 mpd9_r1 (`--mp_d 9`). e50 gate passed by all three; **mpdhinge_r1 hit
 10.8 at e50** — the old all-time best at a quarter of the epochs — with
 false 0.011 (kill threshold 0.025 armed for hinge's creep). mpd9 lags
-the 5-plane runs. These sharpen Track B and tell us which D recipe to
-port to Track A.
+the 5-plane runs. After the mp_d invalidation (below) these runs no
+longer nominate a D recipe for Track A; mpd_r2's final read instead
+tests whether the 10.5 was seed noise (combo seed band 10.6–10.8).
+
+**Slate 5 was cancelled by the user on 2026-11-28 before launch.** The
+implemented claim-intact flags (band_split, g_noise, refine_hr,
+zshuffle, zctx) stay validated in MScleanQDPSFX.py, unlaunched. No new
+runs start when slate 4 releases the GPUs.
 
 ## Plan
 
-1. **Port the D-side wins to Track A (top priority, claim-intact):**
-   `base + R1 + TTUR + mp_d 5 (− inject_x)`, plus hinge if slate 4
-   shows its false creep is tamed by mp_d. Expected ~10.8 codes-only if
-   the mpd gain transfers. This is the next claimed-model result.
+1. **~~Port mp_d to Track A~~ — WITHDRAWN (2026-11-28 audit):** the
+   mp_d real construction (shifted copies of one slice) is provably
+   degenerate — channel k ≡ channel 0 translated k px, a watermark the
+   D keys on; the mp adversarial game collapsed by ~e15 in mpd_r1
+   while the main slice game stayed at equilibrium in the same run.
+   Genuine 1-px multi-plane reals don't exist in anisotropic data, so
+   there is no sound repair that doesn't collapse mp_d into the
+   existing slice D. Full analysis: next-models.md, "mp_d construction
+   audit". The vacated slate-5 slot goes to the Z-aware quantizer
+   (item 3, zctx_r1).
 2. **Latent-only generator changes** (from the three-agent architecture
    research; all opt-in in MScleanQDPSFX.py, zero-init): decode-tail
-   capacity `--refine_hr` (the current tail has ONE 3×3×3 conv after
-   the final upsample — the whole band beyond the PSF data support is
-   synthesized by it), axial sub-pixel head `--zshuffle`, band-split losses
+   capacity `--refine_hr` (the current tail has TWO 3×3×3 convs after
+   the final upsample op — up1's conv + conv7_k; the band beyond the
+   data support is synthesized by them — corrected per audit round 2),
+   axial sub-pixel head `--zshuffle`, band-split losses
    `--band_split` (PSF term on the axial low band, adversarial on the
    high band — repairs the failed --residual correctly), decoder noise
    `--g_noise`, axial 1D FFC.
-3. **Bottleneck-internal direction (claim-intact, new):** the binding
-   narrowness is per-slice-independent quantization destroying
-   inter-slice partial-volume gradations (the sub-slice axial cue).
-   Z-aware encoding/quantization (slice-group context before VQ) keeps
-   codes-only decode true while letting the codes carry axial
-   information. Candidate for a slate-5 slot.
+3. **Bottleneck-internal direction (claim-intact) — IMPLEMENTED, in
+   slate 5 (user-approved 2026-11-28):** the binding narrowness is
+   per-slice-independent quantization destroying inter-slice
+   partial-volume gradations (the sub-slice axial cue). `--zctx 3`
+   mixes a zero-init slice-group Z-context block into the encoder
+   features before VQ; decode stays codes-only, rate unchanged. Takes
+   the slot vacated by the withdrawn mp_d port (zctx_r1).
 4. **Excluded under the framing** (kept as future ablations only):
    `--inject_x_hr`, `--inject_h`, `--skip_hs` — they condition the
    decode path on the measurement or on un-quantized features.

@@ -25,7 +25,11 @@ corr saturates near 0.80 early and is not a progress metric after that.
    reach z_res 13.4 / 14.1 / 14.1 at 100 epochs — the first results clearly
    past the interpolation floor (not past Z-Nyquist: in half-period units
    that threshold is 8; see the 2026-11-28 erratum). This became the
-   "baseline winner" (13.4 best, band 13.4–14.1).
+   "baseline winner" (13.4 best, band 13.4–14.1). *(Erratum 2026-11-28,
+   independent re-audit: on the stored eval JSONs psf_r2 (−0.9) beat
+   bg085_r1 on both z_res (13.026 vs 13.193) and corr (0.8055 vs
+   0.7959); bg085 was carried for its lower false rate (0.027 vs 0.039)
+   and stability, not for z_res.)*
 2. **Crop × batch 2×2.** best→e100 z_res: proxy crop b2 13.2→13.4
    (stable); proxy b12 13.5→13.6; full crop 192×192×24 b2 14.1→15.2 (mild
    decay); full b12 16.0→16.9, reaching 17.3 by e300 (collapse). Proxy
@@ -37,11 +41,20 @@ corr saturates near 0.80 early and is not a progress metric after that.
    training did not help. SWA-style averaging of
    e150–250 checkpoints scored 15.0 — negative (directional drift, not
    noise). Diagnosis: discriminator saturation/overfit; decay onset is
-   monotone in D data-throughput per update.
+   monotone in D data-throughput per update. *(Erratum 2026-11-28:
+   measured log trajectories later showed NO saturation in the pre-R1
+   main game — axx flat ~0.89 over 300 epochs; the diagnosis was
+   overstated. See the round-2 erratum section.)*
 4. **Three-agent code audit (2026-11-25).** Convergent diagnosis: the PSF
    data term is numerically blind in the target band (axial PSF transfer
    ≈ 1–2e-3 at 13.4 px half-period, depending on the trained psf_width
-   1.07 vs 1.0), so the band beyond the PSF data support is carried
+   1.07 vs 1.0) *(erratum 2026-11-28: that transfer figure is the fr=0
+   worst case of the non-separable blur; erratum to the erratum, same
+   date, independent re-audit: the "11–13.5" support edge was itself
+   refuted — corrected per-bin SNR=1 edge z_res ≈ 14.0–18.5, Wiener
+   bound ≈ 14.7–15.8 — see the correction under the round-2 erratum
+   section)*, so the
+   band beyond the PSF data support is carried
    only by the adversarial loss — which was misallocated (half its weight
    on coarse heads via `--adv_ms 0.5`, never swept), starved of input
    information (no skip/residual from the measured volume), and unstable
@@ -74,8 +87,10 @@ z_res 11.1 / corr 0.841 / false 0.012 — r1ttur_r1, epoch 260** (val).
 Recipe = proxy.sh base + `--l1how psf --skipl1 1 --psf_bg -0.85 --save_d
 --adv_ms 0 --n_epochs 300 --yaml aisr_gn --r1 1 --lr_g_factor 0.5`
 (GroupNorm generator, dropout off, R1 γ=1 on real XY slices, TTUR;
-`--n_epochs 300` ends at epoch 299, last checkpoint e290). Seed band
-11.1–11.5 (replicated). Claim-intact ladder: interpolation 17.2 → first
+`--n_epochs 300` ends at epoch 299, last checkpoint e290). Band
+11.1–11.5 across two runs *(erratum 2026-11-28, independent re-audit:
+both runs have seed=None — an unseeded re-run, not a seeded
+replication; the 0.36 gap ≈ 1.3 combined SE)*. Claim-intact ladder: interpolation 17.2 → first
 PSF winner 13.4 → advms0 ~13.2 → +gnorm+annealing 12.4 → **+R1+TTUR
 11.1**. All rungs are losses/training dynamics; the decode path is
 codes-only throughout.
@@ -146,6 +161,8 @@ graduation bar). combo_r2 reproduced the combo recipe at 10.6–10.8
 early and touched 10.5 late, but false climbed monotonically to 0.020 —
 kept only as a combination candidate. Ladder now 17.2 → 13.4 → 12.4 →
 11.1 → 10.8 → **10.5** (carry-forward: MScleanQDPSFX/mpd_r1 e140).
+*(2026-11-28: the mp_d attribution was later invalidated — see the
+"Superseded" note under the framing decision below; the score stands.)*
 
 ## Audit note
 
@@ -193,6 +210,17 @@ to the latent-only recipe is the top-priority run:
 `base + R1 + TTUR + mp_d 5 (− inject_x)` — expected ~10.8 if the mpd
 gain transfers.
 
+*Superseded 2026-11-28 (external audit, point 2): the mp_d port was
+withdrawn before launch. The mp_d real construction (shifted copies of
+one slice) is degenerate — real channel k is exactly channel 0
+translated k px, a watermark the D detects trivially; the mp
+adversarial game collapsed by ~e15 of mpd_r1 (axmp → 24, dmp → 4e-8)
+while the main slice game sat at equilibrium (axx 0.71) in the same
+run. The 10.5 score stands, but the "multi-plane D helps" attribution
+does not (the 10.6→10.5 step is within the combo seed band; mpd_r2 is
+the direct test). Full analysis: next-models.md, "mp_d construction
+audit".*
+
 **Allowed generator directions under this framing:** decode-tail
 capacity (`--refine_hr` WITHOUT inject_x_hr), axial sub-pixel head
 (`--zshuffle`), band-split losses (`--band_split`), decoder noise
@@ -217,3 +245,50 @@ records ("beyond-Nyquist band" → "band beyond the PSF data support";
 reference ladders now state 8 as the threshold); the underlying scores,
 rankings and conclusions are unaffected (the between-run comparisons
 never depended on the threshold).
+
+## Erratum (2026-11-28, external audit round 2): PSF cutoff, decoder, D dynamics
+
+Three corrections from a second external audit, all verified against
+code, data, and logs (full analysis: next-models.md, "External audit
+round 2"):
+
+1. **PSF information cutoff**: the degradation blur is non-separable
+   (axial cutoff widens with lateral frequency), so "axial transfer
+   ~1e-3" only held at fr=0. The frequency-resolved SNR was then
+   measured directly (truth vs degraded spectra, val block 1): the
+   SNR=1 support edge sits at fz ≈ 0.037–0.045 (z_res ≈ 11–13.5),
+   nearly flat across lateral frequency. The 13.4→11.1 gains ran
+   through a partial-information transition band (SNR ~0.3); below
+   z_res ≈ 11 the reconstruction is genuinely prior-driven. Scores and
+   rankings unaffected; the "purely prior-driven beyond 13.4" phrasing
+   was too strong.
+
+   > **Erratum (2026-11-28, independent re-audit — two-agent
+   > validation): this item's SNR measurement is itself refuted.**
+   > Three method errors: the corner noise floor underestimates the
+   > noise (the noise is COLORED by the per-block in-plane resample —
+   > 3–5× power drop toward the corner, so the corner is the spectrum
+   > minimum, not conservative); the white-camera "8.7/bin" prediction
+   > is ~10× wrong; and the UNSCALED transfer was used though val
+   > blocks use width 1.07 (signal overestimated 2–3.5× near the
+   > edge). Corrected by bit-exact degradation replay: the SNR=1
+   > contour is NOT flat in fr (falls ~2× across fr); the per-bin
+   > SNR=1 edge is z_res ≈ **14.0–18.5**; the Wiener
+   > (best-linear-reweighting) bound is z_res ≈ **14.7–15.8**; pooled
+   > raw-data coherence crosses 0.5 at z_res ≈ **17.0–17.2** — exactly
+   > the cubic score. Everything below z_res ≈ 15–16, including 12.4
+   > and 11.1, is prior-driven reconstruction (legitimate — priors
+   > couple frequencies — but to be framed so). Also newly found: the
+   > output head has NO tanh (configs set final='none'; out0 is an
+   > unbounded conv — eval clips, but the D sees unbounded fakes vs
+   > [-1,1] reals). Full record: 2026-11-28-trackA-validation.md.
+2. **Decoder**: netG=ed023emsfpnu instantiates nearest-upsample +
+   Conv3d(k3) stages, not ConvTranspose3d; the full-res tail is two
+   convs, not one. Thin-tail motivation for --refine_hr stands with
+   corrected arithmetic.
+3. **D dynamics**: the G adversarial loss is the non-saturating BCE
+   form; the 24:1 fake:real figure is a sample-diversity asymmetry,
+   not a loss weighting; and measured trajectories show the pre-R1
+   main game never saturated (axx ~0.89 flat). R1+TTUR's 12.4→11.1
+   gain is real but its mechanism attribution (and the R1-vs-TTUR
+   split) is open — r1only/tturonly ablations queued.

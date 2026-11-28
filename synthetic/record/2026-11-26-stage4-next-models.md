@@ -48,7 +48,14 @@ tanh, so all losses still shape how the evidence is used.
 **Implementation.** New flag `--inject_x` in MSclean.py; in
 `_netg_decode`/ed023eMSfpn decode trunk, at each up-stage s: `h = conv_s(
 cat(h, interpolate(oriX, size=h.shape[2:])))`. New conv weights only; the
-rest of the checkpoint structure unchanged. Final activation stays tanh.
+rest of the checkpoint structure unchanged. ~~Final activation stays
+tanh.~~ *(Erratum 2026-11-28, independent re-audit (two-agent
+validation): there is NO tanh — these configs set final='none' →
+Identity, so out0 is a bare unbounded conv. Eval clips, scores
+unaffected, but the D sees unbounded fakes vs [-1,1] reals — an
+undiscussed free discriminator cue. Applies to every tanh mention in
+this doc, including "tanh removed" above — the parent head never had
+one.)*
 
 **Read-out.** Expect z_off → ~0 and lateral spectrum tracking
 interpolation out to high f (both scored/visible in fplane); z_res should
@@ -60,7 +67,12 @@ e50, so a bad run can be killed early.
 
 **Mechanism.** Improvement stalls at ~e140 even annealed; diagnosis is D
 saturation/overfit (vanilla BCE, no regularization, ~24:1 fake:real slice
-imbalance). R1 gradient penalty on real XY slices (~15 lines in
+imbalance). *[Erratum 2026-11-28, external audit: the G loss is the
+non-saturating BCE form; the 24:1 is a sample-diversity asymmetry, not a
+loss weighting; and measured trajectories show no D saturation in the
+pre-R1 game (axx flat ~0.89 for 300 epochs) — see "External audit round
+2". The R1+TTUR gain is real; this mechanism story was overstated.]*
+R1 gradient penalty on real XY slices (~15 lines in
 backward_d, applied to net_d only) is the standard fix for D overfit on
 small real sets; TTUR via the existing `--lr_g_factor` (G at lr/2, D at
 lr) keeps D ahead without saturating. Target: keep the e100–e140 slope
@@ -372,10 +384,12 @@ findings:
 **Code-audit facts (checked against files):**
 - The 8× axial upsample is implicit: 2D encoder folds Z into batch
   (MSclean.py:271-281), per-slice VQ latents form a 16³ grid, and net_g
-  decodes with three ConvTranspose3d(k4,s2) stages. **After the final
-  ×2 upsample there is exactly ONE 3×3×3 conv (32ch, conv7_k) before
-  tanh** (ed023eMSfpn.py:306-307) — the whole band beyond the PSF data
-  support must be synthesized by that single conv. Classic SR anti-pattern.
+  decodes with three ~~ConvTranspose3d(k4,s2)~~ stages. *[CORRECTED
+  2026-11-28, external audit: netG=ed023emsfpnu instantiates the
+  use_upsample branch — each stage is nearest-upsample + Conv3d(k3),
+  and the full-res tail is TWO convs (up1's k3 conv + conv7_k), not
+  one. See "External audit round 2" below.]* The tail is still thin —
+  the band beyond the data support is synthesized by two 3×3×3 convs.
 - Everything the decoder sees is **quantized per-slice 2D** latents
   (~2.7 kbit/slice): inter-slice partial-volume gradations — the main
   sub-slice axial cue — are destroyed before any Z mixing happens.
@@ -394,16 +408,21 @@ findings:
   interpolated volume instead of band-splitting the generator's own
   output).
 
-**Proposed generator slate (slate 5) — REVISED 2026-11-28 for the
+**Proposed generator slate (slate 5) — CANCELLED by user 2026-11-28
+(before launch; slate 4 was still running). The implemented, smoke-
+tested flags (--band_split, --g_noise, --refine_hr, --zshuffle,
+--zctx) remain in MScleanQDPSFX.py, validated and unlaunched.**
+Original proposal, REVISED 2026-11-28 for the
 latent-only framing (user: bottleneck + compression claim must hold in
-every run).** All three runs are claim-intact: decode path = quantized
+every run): All three runs are claim-intact: decode path = quantized
 codes only; no run carries inject_x or any measurement/un-quantized
 conditioning. Base = Track-A recipe (P* + `--r1 1 --lr_g_factor 0.5`,
 NO inject_x). All opt-in flags in MScleanQDPSFX.py, zero-init.
 
 | run | change | mechanism | claim check |
 |---|---|---|---|
-| latent_mpd_r1 | `--mp_d 5` (+ `--d_hinge` only if slate-4 e120–200 revives it) | port the D-side wins to codes-only decode; expected ~10.8 if the mpd gain transfers | D/loss-side only ✓ |
+| ~~latent_mpd_r1~~ | ~~`--mp_d 5`~~ **WITHDRAWN 2026-11-28** | the mp_d real construction was invalidated by the external audit (see "mp_d construction audit" below) | — |
+| zctx_r1 (replacement, user-approved) | `--zctx 3` | Z-aware quantization: zero-init slice-group Z-context block (Conv3d (1,1,3) + LeakyReLU + zero-init 1x1x1, residual) on the encoder features BEFORE the residual multi-scale VQ — codes can then carry the inter-slice partial-volume gradations that per-slice quantization destroys | encoder-side only; decode stays codes-only, rate unchanged ✓ |
 | genhr_r1 | `--refine_hr 2 --zshuffle` (NO inject_x_hr) | decode-tail capacity: 2 residual 3×3×3 blocks after the last upsample (today: ONE conv) + learned axial sub-pixel head; inputs are code-derived features only | decode capacity, same inputs ✓ |
 | genband_r1 | `--band_split --g_noise` | PSF loss on axial low band / adversarial on high band (loss-side filter only); StyleGAN-style decoder noise, **zero at eval** (training-only stochasticity; noise carries no sample information — codes remain the sole information source; inference stays deterministic) | losses + information-free noise ✓ |
 
@@ -450,3 +469,167 @@ now behind both plain-mpd runs — same signature as solo hinge in slate
 kill. mpd_r2 is ahead of mpd_r1's pace (10.6 at e100 vs 10.9) — strong
 replication. mpd9 recovered its slow start and tracks the 5-plane pace
 (wash so far). Next read e120–e200 (mpd_r1 bottomed at 10.5 from e140).
+
+## mp_d construction audit (2026-11-28, external audit point 2) — CONFIRMED invalid
+
+Claim audited: "Reals: N copies of a real XY slice shifted 1 px along Y
+(and X), whose joint statistics match true 1-px-spaced planes by
+in-plane isotropy." The auditor objected that shifted copies of one
+image are not genuine neighboring 3D planes. Verified three ways:
+
+1. **Formal (from the code, `_mp_real`)**: real channel k is exactly
+   channel 0 translated k px — ch_k(y,x) ≡ ch_0(y+k,x) holds to machine
+   precision. No genuine adjacent-plane stack satisfies that identity,
+   so the real class carries a watermark any conv D with >1 px
+   receptive field along the shift axis can detect, and which the
+   generator can never replicate. (The construction does match all
+   single-line statistics — n consecutive 1-px samples — but not the
+   3D joint law it was meant to stand in for.)
+
+2. **Training dynamics (mpd_r1 log)**: the mp game collapsed almost
+   immediately — dmp < 1e-3 by ~e12, axmp > 10 by ~e16, ending at
+   axmp = 24.2 / dmp = 4e-8, i.e. the live D separated reals from fakes
+   perfectly at a ~40-logit margin for 95% of training. Control in the
+   same run: the main six-way slice game — same data, same noise-domain
+   gap, same R1, no watermark — ended at textbook equilibrium
+   (axx 0.71 ≈ −log 0.5, dxx_x 1.37). The watermark is the structural
+   difference.
+
+3. **Checkpoint probe (net_d_mp e0→e290, saved EMA weights)**: output
+   is near input-independent at every epoch and drifts monotonically to
+   "everything fake" (−24): the weight-average of a fully-won
+   oscillation-free D. (Checkpoints hold EMA weights —
+   MSclean.training_epoch_end swaps them in — so the live D is not
+   recoverable; the log magnitudes above are the live-D evidence.)
+
+**Consequences.**
+- mpd_r1's 10.5 is a real *score* (eval vs truth) but the *attribution*
+  "multi-plane D helps" is unsupported: for ~95% of training the mp
+  term contributed a saturated, near-constant-direction gradient (a
+  weak continuity prior at best), and the 10.6 → 10.5 step is within
+  the combo seed band (10.6–10.8). Slate 4's mpd_r2 directly tests the
+  seed-noise hypothesis — its final read matters more now, not less.
+- No repair keeps the idea: genuine 1-px-spaced multi-plane reals do
+  not exist in anisotropic measured data, and restricting the D so the
+  watermark is invisible (receptive field 1 px along the shift axis)
+  reduces every real stack to a re-laid-out 2D patch of a single slice
+  — i.e. collapses mp_d into the slice D we already run. The only
+  sound remnant is a 1×1-conv (per-pixel, channels-only) line-stack D
+  matching 5-sample axial marginals to in-plane line marginals — a
+  much weaker prior than intended.
+- **Slate-5 change: latent_mpd_r1 (port mp_d to Track A) is withdrawn
+  as designed** — adopting mp_d into the claimed model on this evidence
+  is exactly what the audit warned against. genhr_r1 and genband_r1
+  are unaffected. User decision (2026-11-28): the third slot goes to
+  the Z-aware quantizer direction — `--zctx 3` implemented in
+  MScleanQDPSFX.py, unit-tested (b-major layout / round-trip /
+  zero-init identity / ±1-slice locality / no cross-volume leakage all
+  exact) and smoke-trained (smoke_zctx, 1 epoch GPU 0, 1.7 it/s, sane
+  losses; zctx_block saved+loaded; e0 eval 30.1; zero-init last conv
+  moved to ~9e-3 after one epoch, so it is optimized). Note
+  z_channels = 4: the context block operates in a 4-channel space —
+  tiny capacity, right location; widen only if the direction works.
+
+## External audit round 2 (2026-11-28) — three corrections, all verified
+
+**1. "PSF information cutoff" was mis-justified; now measured (auditor
+right on reasoning, original number survives). [REFUTED in part,
+2026-11-28 — see the erratum appended below this item.]** The degradation blur is
+non-separable (degrade.py:39): amplitude = exp(−0.5·(fz/(a+b·fr))^p)
+with a=0.00604, b=0.0429, p=1.385 — the axial cutoff WIDENS with
+lateral frequency. At fz=0.0373 (the 13.4 crossing) the transfer is
+2e-3 at fr=0 but 5% at fr=0.1 and 10% at fr=0.15: the old "axial PSF
+transfer ~1e-3" was the fr=0 worst case only. The right criterion is
+SNR, now measured (val block 1, Hann-tapered 3D spectra; clean =
+apply_transfer(truth)[::8] in window units; noise floor from the empty
+spectral corner fr>0.42, fz>0.05 = 44 /bin — conservative; white
+camera model alone predicts 8.7):
+
+| fz band (z_res) | peak SNR over fr | reading |
+|---|---|---|
+| 0.030–0.037 (13.5–16.7) | 8.5 | supported |
+| 0.037–0.045 (11.1–13.5) | 0.34 (0.25–0.34, FLAT in fr) | transition: partial information (≈1.3–1.7 under the white-only floor) |
+| 0.045–0.0525 (9.5–11.1) | 0.05 | effectively prior-driven |
+| 0.0525–0.0625 (8–9.5) | 0.016 | prior-driven |
+
+Striking: the SNR contour is nearly flat in fr — the rising transfer
+and the falling object spectrum almost exactly cancel — so a
+single-number support edge IS justified, at fz ≈ 0.037 (conservative
+floor) to ≈ 0.045 (white-only floor), i.e. z_res ≈ 11–13.5.
+Consequences: the 17.2→13.4 PSF-replay gain ran inside measured
+support; the 13.4→11.1 climb used a transition band with partial data
+support (Wiener gain up to ~0.25, not zero — "purely prior-driven" was
+too strong there); below z_res ≈ 11 the reconstruction is genuinely
+prior-driven (SNR ≤ 0.05 conservative, ≤ 0.26 generous). Milestone
+unchanged.
+
+> **Erratum (2026-11-28, independent re-audit — two-agent validation).**
+> The measurement above is refuted on three method errors, and both key
+> sub-claims fall. (a) **Colored-noise corner floor**: the noise is
+> colored by the per-block in-plane resample (3–5× power drop toward
+> the spectral corner), so the fr>0.42/fz>0.05 corner floor is the
+> spectrum MINIMUM, not conservative (v00001 corner 47 vs in-band
+> 56–86 counts²; v00000 corner 10 vs in-band 33–50). (b) **Wrong white
+> prediction**: the white-camera "8.7/bin" is ~10× wrong. (c)
+> **Unscaled transfer width**: the analysis used the unscaled transfer
+> although val blocks use width 1.07, overestimating signal 2–3.5×
+> near the edge; ceiling-clip harmonics (~0.04–0.07% clipped voxels)
+> further inflate apparent high-fz "signal" (85% of the naive residual
+> variance there). Corrected, by bit-exact degradation replay
+> (reproduces the stored degraded TIFFs with max|sim−deg| = 0.0): the
+> SNR=1 contour is NOT flat in fr — it falls ~2× across fr (fz ≈
+> 0.033–0.036 at fr<0.05; 0.025–0.030 at fr 0.10–0.15; 0.016–0.024 at
+> 0.15–0.25; fr>0.25 never reaches 1) — and the per-bin SNR=1 edge is
+> z_res ≈ **14.0–18.5** (best bin 14.0), not 11–13.5. The empirical
+> Wiener (best linear reweighting) bound is z_res ≈ **14.7–15.8**, and
+> pooled raw-data coherence with truth crosses 0.5 at z_res ≈
+> **17.0–17.2** — exactly the cubic score. So the 13.4→11.1 climb did
+> NOT run through a partial-information band: everything below z_res ≈
+> 15–16, including 12.4 and 11.1, is prior-driven reconstruction.
+> Milestone still unchanged. Full record:
+> 2026-11-28-trackA-validation.md.
+
+**2. Decoder description was wrong (auditor right).** netG =
+ed023emsfpnu ∈ UPSAMPLE_GENERATORS (registry.py:22,50) →
+deconv3d_bn_block instantiates the use_upsample branch: NEAREST-
+UPSAMPLE + Conv3d(k3), not ConvTranspose3d(k4,s2) (ed023eMSfpn.py:
+173-181). The research-synthesis bullet described the un-instantiated
+branch. Corrected implications: the full-res tail after the last
+upsample op is TWO convs (up1's k3 conv + conv7_k), not one — still
+thin, so --refine_hr's motivation stands with corrected arithmetic.
+--zshuffle's motivation restated for the real baseline: nearest
+upsampling is a zero-order hold along Z (sinc attenuation + aliasing
+replicas; both z-phases copy the same slice and differ only through
+the following shared conv); a learned per-phase sub-pixel head remains
+the right counter. No slate-5 change needed.
+
+**3. D-collapse diagnosis overstated (auditor right); now measured.**
+(a) The G adversarial loss is BCE(logits, 1) = softplus(−logits) — the
+standard NON-saturating heuristic; "vanilla saturating BCE" in the
+2026-11-25 plan was wrong. (b) All adversarial terms are mean-reduced
+with fixed weights (backward_d: dxx averaged over orientations + dx;
+equilibrium 1.386, matching logs), so the ~24:1 fake:real SLICE COUNT
+is a sample-diversity asymmetry (D sees ~24× more distinct fake
+patches than real per step; small recurring real pool → overfit RISK),
+not a loss-weighting imbalance. (c) Measured live-game trajectories
+(epoch-end log values): pre-R1 advms0gn_e300 shows NO collapse over
+300 epochs — axx flat ~0.89, dxx_x 0.89→0.82 (mild persistent D
+advantage, nothing like the mp game's 24/4e-8); r1ttur_r1 sits at
+equilibrium (axx 0.70, dxx_x 0.95). So R1+TTUR demonstrably moved the
+game to equilibrium and gained 12.4→11.1, but the mechanism story "D
+saturation killed the gradient" is refuted as stated; the honest
+version is "mild D advantage + stall, cause unproven." (d) R1 (γ=1)
+and TTUR (lr_g×0.5, which also slows the whole AE/VQ stack) were never
+separated — r1only_r1 / tturonly_r1 added to the reserve ablation list
+(candidate slate-6 slots alongside wider zctx).
+
+## Slate 4 terminated early (2026-11-28, user decision)
+
+All three Track-B runs stopped by the user at ~e190 (mpd_r2 last
+checkpoint e190; mpdhinge_r1 and mpd9_r1 e180), after the mp_d
+construction invalidation made their D-recipe question moot. Their
+e120–e180 checkpoints are saved (every 20) and can be scored later if
+the mpd_r2 seed-noise question (was mpd_r1's 10.5 within the 10.6–10.8
+combo seed band?) becomes paper-relevant. Launcher and e120–200 scorer
+tasks stopped; all 8 GPUs verified idle (2 MiB, 0 %). Slate 5 was
+cancelled before launch — nothing is running or queued.

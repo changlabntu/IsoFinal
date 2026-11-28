@@ -20,8 +20,11 @@ import torch.nn.functional as F
 #   path stays untouched as the structural prior. Unlike --residual (which
 #   anchored the OUTPUT and collapsed onto interpolation while the adversarial
 #   gradient hallucinated texture, skip_r1), the evidence here arrives before
-#   the up2/up1 conv stages and the final tanh, so every loss still shapes how
-#   it is used.
+#   the up2/up1 conv stages and the out0 head, so every loss still shapes how
+#   it is used. (Erratum 2026-11-28, independent re-audit: this comment used
+#   to say "the final tanh" — there is no tanh; configs set final='none', so
+#   out0 is a bare unbounded conv. Eval clips, but the D sees unbounded fakes
+#   vs [-1,1] reals.)
 #   Inference: generation_test(method='full') injects the input volume;
 #   method='decode'/'decode_ms' (latents only, no measured volume available)
 #   falls back to the parent path WITHOUT injection — do not evaluate an
@@ -47,9 +50,17 @@ import torch.nn.functional as F
 #   progression) — exactly the signature of fabricated axial detail. Fakes:
 #   stacks of N adjacent planes of the generated volume along each of Y/X/Z
 #   (1 px spacing). Reals: N copies of a real XY slice shifted 1 px along Y
-#   (and along X), whose joint statistics match true 1-px-spaced planes by
-#   in-plane isotropy (SliceGAN-style). Weight --adv * --adv_mp. When --r1 is
-#   on, the same lazy R1 penalty is applied to net_d_mp on its real stacks.
+#   (and along X). INVALIDATED by the 2026-11-28 audit: shifted copies are
+#   NOT distributionally equivalent to genuine adjacent planes — real channel
+#   k is exactly channel 0 translated k px, a watermark a conv D detects
+#   trivially and the generator can never replicate. In mpd_r1 the mp game
+#   collapsed by ~e15 (dmp -> 4e-8, axmp -> 24, i.e. perfect real/fake
+#   separation at ~40-logit margin) while the main slice game stayed at
+#   equilibrium (axx 0.71) in the same run. Genuine 1-px multi-plane reals do
+#   not exist in anisotropic measured data, and restricting the D so the
+#   watermark vanishes collapses mp_d into the existing slice D. Kept only as
+#   a documented negative result; do not adopt. Weight --adv * --adv_mp. When
+#   --r1 is on, the same lazy R1 penalty is applied to net_d_mp on its reals.
 #   net_d_mp is saved via netd_names and EMA-registered like every other D
 #   (LitEma.forward crashes on any requires_grad param missing from its map).
 #
@@ -75,8 +86,10 @@ import torch.nn.functional as F
 #
 # --refine_hr N  Decode-tail capacity: N residual 3x3x3 conv blocks (GN +
 #   LeakyReLU, final conv zero-init) at FULL resolution between net_g's up1
-#   and the conv7 output heads. Today the entire band beyond the PSF data
-#   support is synthesized by the single conv7_k conv after the last upsample; this adds
+#   and the conv7 output heads. Today the band beyond the measured SNR
+#   support is synthesized by just two convs after the last upsample op
+#   (up1's k3 conv + conv7_k — netG=ed023emsfpnu uses nearest-upsample+conv
+#   stages, not ConvTranspose; corrected 2026-11-28 audit); this adds
 #   receptive field and depth where the new axial detail must be placed.
 #   Implemented by calling net_g's own submodules in the exact forward order
 #   (up3/conv5/out64/inject/up2/conv6/out128/inject/up1), so with the final
@@ -85,11 +98,26 @@ import torch.nn.functional as F
 #
 # --zshuffle  Learned axial sub-pixel head: a conv on the post-conv6 half-res
 #   features expands channels x2, pixel-shuffles the factor into Z (each
-#   output z-phase gets its own filter instead of shared transposed-conv
-#   taps), trilinear-resizes laterally and enters the full-res tail through a
-#   zero-init 1x1x1 adapter. Counters the low-pass bias of the transposed-
-#   conv upsampler for the finest axial band. Code-derived only — claim-
-#   intact.
+#   output z-phase gets its own filter), trilinear-resizes laterally and
+#   enters the full-res tail through a zero-init 1x1x1 adapter. The
+#   instantiated upsampler is nearest-upsample + conv (a zero-order hold
+#   along Z: both z-phases copy the same slice and differ only through the
+#   following shared conv — sinc attenuation + aliasing replicas; corrected
+#   2026-11-28 audit, was described as transposed-conv); a per-phase
+#   sub-pixel head counters that bias for the finest axial band.
+#   Code-derived only — claim-intact.
+#
+# --zctx K  Z-aware quantization (bottleneck-internal): a slice-group
+#   Z-context block — Conv3d (1,1,K) along Z + LeakyReLU + zero-init 1x1x1,
+#   residual — mixed into the ENCODER features before the residual multi-scale
+#   VQ. Today each slice is quantized independently, which destroys the
+#   inter-slice partial-volume gradations that carry the sub-slice axial cue;
+#   with context, the codes themselves can encode where structure sits
+#   between slices. Everything downstream of the quantizers is untouched and
+#   decode remains codes-only, so the compression claim is intact (the rate
+#   is unchanged; only what the codes choose to represent changes). Slice
+#   batches are b-major; eval stashes the volume batch size via
+#   generation_test, training recovers it from oriX.
 #
 # NOTE (snapshot): train.py copies only this file into the checkpoint dir; it
 # subclasses models/MScleanQDPSF.py -> MScleanQD.py -> MSclean.py.
@@ -167,6 +195,20 @@ class GAN(MScleanQDPSFGAN):
                 [rblock() for _ in range(self.hparams.refine_hr)])
             self.netg_names['refine_blocks'] = 'refine_blocks'
             extra_g = True
+        if getattr(self.hparams, 'zctx', 0) > 0:
+            K = int(self.hparams.zctx)
+            if K % 2 == 0:
+                raise ValueError('--zctx must be odd; got %d' % K)
+            zc = self.quant_convs[0].in_channels
+            last = nn.Conv3d(zc, zc, 1)
+            nn.init.zeros_(last.weight)
+            nn.init.zeros_(last.bias)
+            self.zctx_block = nn.Sequential(
+                nn.Conv3d(zc, zc, (1, 1, K), padding=(0, 0, K // 2)),
+                nn.LeakyReLU(0.2, inplace=True), last)
+            self.netg_names['zctx_block'] = 'zctx_block'
+            extra_g = True
+        self._zctx_B = None
         if extra_g:
             # LitEma.forward requires every requires_grad param in its map.
             from ldm.modules.ema import LitEma
@@ -204,6 +246,11 @@ class GAN(MScleanQDPSFGAN):
         parser.add_argument("--zshuffle", action='store_true', default=False,
                             help='learned axial sub-pixel (Z pixel-shuffle) branch from the '
                                  'half-res features into the full-res tail (zero-init adapter)')
+        parser.add_argument("--zctx", type=int, default=0,
+                            help='odd kernel size of a zero-init slice-group Z-context block '
+                                 'mixed into the encoder features BEFORE quantization, so the '
+                                 'codes can carry inter-slice partial-volume gradations; the '
+                                 'decode path stays codes-only. 0 disables')
         return parent_parser
 
     def configure_optimizers(self):
@@ -213,7 +260,7 @@ class GAN(MScleanQDPSFGAN):
         # scheduler after adding groups so its base_lrs cover them.
         g_added = False
         for name in ('xinj_convs', 'gnoise_scales', 'zshuf_conv', 'zshuf_adapt',
-                     'refine_blocks'):
+                     'refine_blocks', 'zctx_block'):
             if hasattr(self, name):
                 opts[0].add_param_group({'params': list(getattr(self, name).parameters())})
                 g_added = True
@@ -376,14 +423,62 @@ class GAN(MScleanQDPSFGAN):
         return {'out0': g.conv7_k(x), 'out1': g.conv7_g(x),
                 'out128': out128, 'out64': out64}
 
+    def encode(self, x):
+        """MSclean.encode with the optional --zctx step: a zero-init
+        slice-group Z-context block mixed into the encoder features BEFORE
+        quantization (codes can then carry inter-slice partial-volume
+        gradations). Everything from the residual-VQ loop on mirrors
+        MSclean.encode unchanged; the decode path stays codes-only."""
+        if getattr(self.hparams, 'zctx', 0) <= 0:
+            return super().encode(x)
+        h, _, _ = self.encoder(x)
+        H, W = h.shape[-2:]
+        N = h.shape[0]
+        # Slice batches are b-major (vol_to_slices): N = B*Z. Training sets
+        # oriX just before encode; eval stashes B in generation_test.
+        B = self._zctx_B
+        if B is None:
+            ori = getattr(self, 'oriX', None)
+            B = ori.shape[0] if (self.training and ori is not None
+                                 and N % ori.shape[0] == 0) else 1
+        v = h.reshape(B, N // B, -1, H, W).permute(0, 2, 3, 4, 1)  # (B,C,H,W,Z)
+        h = h + self.zctx_block(v).permute(0, 4, 1, 2, 3).reshape(N, -1, H, W)
+
+        residual = h
+        scale_latents, emb_losses, indices, perplexities = [], [], [], []
+        for k, scale in enumerate(self.scale_factors):
+            r_k = residual
+            if scale > 1:
+                r_k = F.interpolate(r_k, size=(H // scale, W // scale),
+                                    mode='bilinear', align_corners=False)
+            code_k, emb_loss_k, info_k = self.quantizers[k](self.quant_convs[k](r_k))
+            emb_losses.append(emb_loss_k)
+            indices.append(info_k[2])
+            perplexities.append(info_k[0])
+            if scale > 1:
+                code_k = F.interpolate(code_k, size=(H, W),
+                                       mode='bilinear', align_corners=False)
+            latent_k = self.post_quant_convs[k](code_k)
+            scale_latents.append(latent_k)
+            residual = residual - latent_k
+        self.vq_perplexity = perplexities
+        return scale_latents, sum(emb_losses) / self.num_scales, indices
+
     def generation_test(self, x, method='full', stop_at=None):
-        if getattr(self.hparams, 'inject_x', False) and method == 'full':
+        stash_inj = getattr(self.hparams, 'inject_x', False) and method == 'full'
+        stash_b = (getattr(self.hparams, 'zctx', 0) > 0
+                   and method in ('full', 'encode') and hasattr(x, 'shape'))
+        if stash_inj:
             self._inject_src = x
-            try:
-                return super().generation_test(x, method, stop_at)
-            finally:
+        if stash_b:
+            self._zctx_B = x.shape[0]
+        try:
+            return super().generation_test(x, method, stop_at)
+        finally:
+            if stash_inj:
                 self._inject_src = None
-        return super().generation_test(x, method, stop_at)
+            if stash_b:
+                self._zctx_B = None
 
     @staticmethod
     def _r1_term(net_d, real):

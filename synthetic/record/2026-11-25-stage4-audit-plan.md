@@ -58,7 +58,13 @@ current frontier is carried **only by the adversarial term**. That term is:
    (`gan_mode: vanilla`), no R1/spectral norm/instance noise/D
    augmentation anywhere, ~24:1 fake:real slice imbalance per step (D sees
    3 orientations × 128+ slices fake vs 16-24 real XY slices from the same
-   crop). At identical constant lr, decay onset is monotone in D
+   crop). *[Erratum 2026-11-28, external audit: the G loss is the
+   NON-saturating BCE form; the 24:1 count is a sample-diversity
+   asymmetry (all terms are mean-reduced with fixed weights), not a loss
+   weighting; and measured trajectories later showed the pre-R1 main
+   game never saturated (axx flat ~0.89 for 300 epochs). See
+   2026-11-26-stage4-next-models.md, "External audit round 2".]*
+   At identical constant lr, decay onset is monotone in D
    data-throughput per update: full+b12 ~e60 < proxy+b12 ~e250 < full+b2
    (mild, e100) < proxy+b2 (stable ≥e100). Diagnosis: D saturation/overfit
    kills the adversarial gradient; the other losses hold everything they
@@ -219,7 +225,10 @@ operates in the win band. Anti-aliasing the D is the wrong direction here.
 z_res pinned at the interpolation floor (16.5–17.3) for all 100 epochs while
 the false rate climbs monotonically (0.063 → 0.140, ~5× baseline) and corr
 falls — the predicted failure mode. Reading: with the output anchored at Xup
-and the final tanh removed, the PSF data term is already nearly satisfied by
+and no bounding activation *(erratum 2026-11-28, independent re-audit: the
+original "final tanh removed" implied the parent head had a tanh — it never
+did; all these configs set final='none', so out0 is an unbounded conv in the
+parent too)*, the PSF data term is already nearly satisfied by
 the anchor, so the correction branch gets no data-term shaping and the
 adversarial gradient buys texture (hallucinations) instead of resolution.
 Residual-over-interpolation in this minimal form (anchor at the output only,
