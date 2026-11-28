@@ -9,12 +9,16 @@ curves in `$LOGS/synth.db` (MLflow).
 
 Metric: z_res = 0.5/fz50 (px, lower is better), from spectral correlation
 against the aligned ground truth. Reference points on `val`: ~1 px metric
-ceiling, 16 px Z-sampling Nyquist, ~17.2 px interpolation floor.
+ceiling, 8 px Z-sampling Nyquist HALF-period (z_res is a half-period, so
+8 — not the 16-px full period — is the sampling-limit threshold in these
+units), ~17.2 px interpolation floor.
 
 1. **The PSF Z-consistency loss wins.** On `val` at 100 epochs, the floored
    PSF variants (psf, bg085, wide) reach z_res 13.4–14.1 vs 14.9 for the
-   MScleanQD baseline and ~17.2–17.3 for interpolation — beyond the sampling
-   Nyquist, i.e. real deconvolution. The corr margin over the baseline
+   MScleanQD baseline and ~17.2–17.3 for interpolation — clearly past the
+   interpolation floor, i.e. real deconvolution within the sampled band
+   (NOT past the sampling Nyquist: that threshold is 8 in half-period
+   units; see the 2026-11-28 erratum). The corr margin over the baseline
    (~0.06) is ~10× the repeat spread; the z_res margin over the baseline is
    0.8–1.5 px, modest but consistent, and over interpolation 3–4 px. The
    same ordering holds on `val_narrow` and `val_wide`. (nofloor collapses to
@@ -81,7 +85,8 @@ Epoch 100 on the other blur widths (corr / z_res):
 | cubic | 0.727 / 15.5 | 0.679 / 18.9 |
 
 Reference points for z_res (px): 1 = metric ceiling (perfect truth recovery),
-16 = Z sampling Nyquist (8× slice spacing), ~17.2 = interpolation floor on `val`.
+8 = Z sampling Nyquist half-period (8× slice spacing; z_res is a half-period,
+so 8 is the sampling limit in these units), ~17.2 = interpolation floor on `val`.
 
 ### Conclusions
 
@@ -90,8 +95,11 @@ Reference points for z_res (px): 1 = metric ceiling (perfect truth recovery),
   The corr margins are ~10× the repeat spread (psf_r1 vs psf_r2 ≈ 0.006
   corr, 0.1 z_res); the z_res margin is 0.8–1.5 px over the baseline and
   3–4 px over interpolation.
-- All PSF runs resolve **beyond the 16-px sampling Nyquist** — genuine
-  deconvolution, not interpolation, by the hallucination-proof spectral metric.
+- All PSF runs resolve **well past the interpolation floor** — genuine
+  deconvolution, not interpolation, by the hallucination-proof spectral
+  metric. (Erratum 2026-11-28: an earlier version said "beyond the 16-px
+  sampling Nyquist" — a unit error; 13.4 half-period = f50 0.037 cyc/px,
+  still below the 0.0625 Nyquist frequency. Crossing requires z_res < 8.)
 - **bg085 (`--psf_bg -0.85`) is the best variant** (13.4 on val, 12.2 narrow).
 - **nofloor is rejected**: removing the input floor collapses z_res to the
   interpolation floor at every width.
@@ -145,7 +153,7 @@ Set `val`:
 | 200 | 21.69 | 0.750 | 17.7 |
 | 250–360 | ~21.7 | ~0.754 | ~17.3 |
 
-It peaks early (z_res 16.0 at e30 — never beating the sampling Nyquist), then
+It peaks early (z_res 16.0 at e30 — barely better than interpolation), then
 decays to the interpolation floor while corr holds ~0.75: the model keeps coarse
 structure but stops resolving. Worse than the proxy even at matched update
 counts (12k updates ≈ proxy e60: 0.797 / 13.2). Checkpoints 0–390 remain at
@@ -263,7 +271,7 @@ stopped on the (false) log-metric alarm. Set `val`:
   reading of this record was wrong). Decay onset is monotone in the
   discriminators' data-throughput per update, consistent with D
   saturation/overfit killing the adversarial gradient — the only loss term
-  that constrains the beyond-Nyquist band. lr annealing
+  that constrains the band beyond the PSF data support. lr annealing
   (`--n_epochs <run length>`) is untested and free to try.
 - Practical: stage 5 should train ~100 epochs, proxy crop, small effective
   batch; pick checkpoints by scored evaluation, not by training length.

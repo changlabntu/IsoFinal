@@ -23,7 +23,8 @@ corr saturates near 0.80 early and is not a progress metric after that.
 1. **PSF-loss sweep (2026-11-22).** A Z-consistency loss that replays the
    acquisition (`--l1how psf --skipl1 1 --psf_bg -0.85`) wins; three seeds
    reach z_res 13.4 / 14.1 / 14.1 at 100 epochs — the first results clearly
-   past the interpolation floor and past Z-Nyquist. This became the
+   past the interpolation floor (not past Z-Nyquist: in half-period units
+   that threshold is 8; see the 2026-11-28 erratum). This became the
    "baseline winner" (13.4 best, band 13.4–14.1).
 2. **Crop × batch 2×2.** best→e100 z_res: proxy crop b2 13.2→13.4
    (stable); proxy b12 13.5→13.6; full crop 192×192×24 b2 14.1→15.2 (mild
@@ -40,7 +41,7 @@ corr saturates near 0.80 early and is not a progress metric after that.
 4. **Three-agent code audit (2026-11-25).** Convergent diagnosis: the PSF
    data term is numerically blind in the target band (axial PSF transfer
    ≈ 1–2e-3 at 13.4 px half-period, depending on the trained psf_width
-   1.07 vs 1.0), so the beyond-Nyquist band is carried
+   1.07 vs 1.0), so the band beyond the PSF data support is carried
    only by the adversarial loss — which was misallocated (half its weight
    on coarse heads via `--adv_ms 0.5`, never swept), starved of input
    information (no skip/residual from the measured volume), and unstable
@@ -198,3 +199,21 @@ capacity (`--refine_hr` WITHOUT inject_x_hr), axial sub-pixel head
 (`--g_noise`), axial FFC — all latent-only-safe. Excluded for now:
 `--inject_x_hr`, `--inject_h`, `--skip_hs` (they condition the decode
 path on measurement or un-quantized features).
+
+## Erratum (2026-11-28, from external audit): Nyquist units
+
+z_res = 0.5/fz50 is a HALF-period. At 8-px slice spacing the sampling
+Nyquist frequency is 1/16 cyc/px, i.e. a 16-px full period = an 8-px
+half-period. The sampling-limit threshold in z_res units is therefore
+**8, not 16**. Early records compared z_res scores against 16 (full
+period) — a unit mix-up — and claimed "past Z-Nyquist" at 13.4. In
+fact every score to date (13.4 → 11.1 claim-intact, 10.5 conditioned)
+has f50 = 0.037–0.048 cyc/px, BELOW the 0.0625 Nyquist frequency: the
+gains are genuine deconvolution past the interpolation floor and past
+the PSF data-support edge (~13–14), but still within the sampled band.
+Crossing the sampling limit requires z_res < 8 — which is and remains
+the campaign milestone. Affected phrasing corrected throughout the
+records ("beyond-Nyquist band" → "band beyond the PSF data support";
+reference ladders now state 8 as the threshold); the underlying scores,
+rankings and conclusions are unaffected (the between-run comparisons
+never depended on the threshold).

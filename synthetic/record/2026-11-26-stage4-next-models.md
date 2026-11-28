@@ -31,7 +31,7 @@ annealed). One change per run.
 **Mechanism.** The generator's only input today is the per-slice VQ
 16×16×4 latent; quantization destroys the small intensity gradations
 (partial-volume/PSF ratios across neighboring slices) that carry
-sub-Nyquist axial position, and fine lateral detail is re-hallucinated
+sub-slice axial position, and fine lateral detail is re-hallucinated
 from 16×16 codes. Hence the +3-plane z-offset and lateral retreat. Fix:
 concatenate a trilinearly resized copy of the measured volume (oriX) into
 the decoder at each up-stage, each followed by a 1–3³ merge conv, keeping
@@ -366,18 +366,19 @@ exceeds ~0.025 at any scored epoch (hinge's false creep).
 
 Agents: (1) literature survey of isotropic-recon generators, (2) code
 audit of our generator path, (3) SR-mechanism assessment for the
-beyond-Nyquist regime. Full reports in session; convergent findings:
+regime beyond the PSF data support. Full reports in session; convergent
+findings:
 
 **Code-audit facts (checked against files):**
 - The 8× axial upsample is implicit: 2D encoder folds Z into batch
   (MSclean.py:271-281), per-slice VQ latents form a 16³ grid, and net_g
   decodes with three ConvTranspose3d(k4,s2) stages. **After the final
   ×2 upsample there is exactly ONE 3×3×3 conv (32ch, conv7_k) before
-  tanh** (ed023eMSfpn.py:306-307) — the whole beyond-Nyquist band must
-  be synthesized by that single conv. Classic SR anti-pattern.
+  tanh** (ed023eMSfpn.py:306-307) — the whole band beyond the PSF data
+  support must be synthesized by that single conv. Classic SR anti-pattern.
 - Everything the decoder sees is **quantized per-slice 2D** latents
   (~2.7 kbit/slice): inter-slice partial-volume gradations — the main
-  sub-Nyquist axial cue — are destroyed before any Z mixing happens.
+  sub-slice axial cue — are destroyed before any Z mixing happens.
   Only bypass is inject_x, at (Y/4,X/4) and (Y/2,X/2) — never at full
   lateral resolution. inject_x helping confirms the bottleneck binds.
 - U-Net skips: encoder returns hs but MSclean.py:303 discards them.

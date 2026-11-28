@@ -10,7 +10,7 @@ import torch.nn.functional as F
 # --inject_x  Decoder-stage input injection. The generator's only input is the
 #   per-slice quantized latent; quantization destroys the small intensity
 #   gradations (partial-volume / PSF ratios across neighboring slices) that
-#   carry sub-Nyquist axial position, and fine lateral detail is
+#   carry sub-slice axial position, and fine lateral detail is
 #   re-hallucinated from 16x16 codes (record/2026-11-26-stage4-next-models.md,
 #   proposal 1). Fix: feed the measured volume itself into net_g's existing
 #   lateral-inject points (pre_up2 at 1/4 res, pre_up1 at 1/2 res), through
@@ -59,7 +59,8 @@ import torch.nn.functional as F
 #   (separable 2D Gaussian, reflect pad) before the D sees it. The PSF replay
 #   term already owns the low band (it blurs with the PSF), so this stops the
 #   adversarial gradient from fighting over the band the data term supervises
-#   and spends all its capacity in the beyond-Nyquist band. The generator
+#   and spends all its capacity in the band beyond the PSF data support.
+#   The generator
 #   OUTPUT is untouched (unlike the failed --residual: nothing is anchored to
 #   interpolation — the split is a loss-side filter on the D inputs only).
 #   The VQ stack's internal reconstruction discriminator is untouched.
@@ -74,8 +75,8 @@ import torch.nn.functional as F
 #
 # --refine_hr N  Decode-tail capacity: N residual 3x3x3 conv blocks (GN +
 #   LeakyReLU, final conv zero-init) at FULL resolution between net_g's up1
-#   and the conv7 output heads. Today the entire beyond-Nyquist band is
-#   synthesized by the single conv7_k conv after the last upsample; this adds
+#   and the conv7 output heads. Today the entire band beyond the PSF data
+#   support is synthesized by the single conv7_k conv after the last upsample; this adds
 #   receptive field and depth where the new axial detail must be placed.
 #   Implemented by calling net_g's own submodules in the exact forward order
 #   (up3/conv5/out64/inject/up2/conv6/out128/inject/up1), so with the final

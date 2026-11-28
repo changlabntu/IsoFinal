@@ -2,7 +2,8 @@
 
 2026-11-25. Context: after the crop×batch 2×2 and the 1000-epoch run
 (`2026-11-22-stage4-psf-sweep.md`), the best model sits at z_res 13.4–14.1
-(interpolation floor 17.2, Z Nyquist 16, metric ceiling ~1, lateral ~2) and
+(interpolation floor 17.2, Z Nyquist half-period 8 — the sampling-limit
+threshold in z_res units, metric ceiling ~1, lateral ~2) and
 longer training regresses after a peak. Three independent code audits
 (loss weights / architecture / training dynamics) were run to find the
 highest-leverage changes before spending more GPU time. This note records

@@ -79,14 +79,14 @@ port to Track A.
 2. **Latent-only generator changes** (from the three-agent architecture
    research; all opt-in in MScleanQDPSFX.py, zero-init): decode-tail
    capacity `--refine_hr` (the current tail has ONE 3×3×3 conv after
-   the final upsample — the whole beyond-Nyquist band is synthesized by
-   it), axial sub-pixel head `--zshuffle`, band-split losses
+   the final upsample — the whole band beyond the PSF data support is
+   synthesized by it), axial sub-pixel head `--zshuffle`, band-split losses
    `--band_split` (PSF term on the axial low band, adversarial on the
    high band — repairs the failed --residual correctly), decoder noise
    `--g_noise`, axial 1D FFC.
 3. **Bottleneck-internal direction (claim-intact, new):** the binding
    narrowness is per-slice-independent quantization destroying
-   inter-slice partial-volume gradations (the sub-Nyquist axial cue).
+   inter-slice partial-volume gradations (the sub-slice axial cue).
    Z-aware encoding/quantization (slice-group context before VQ) keeps
    codes-only decode true while letting the codes carry axial
    information. Candidate for a slate-5 slot.
